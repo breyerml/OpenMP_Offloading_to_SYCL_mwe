@@ -5,7 +5,13 @@ Requires a `C++17` compliant compiler.
 
 ```bash
 $ mkdir build && cd build
-$ cmake -DDEBUG_INFO=ON ..
+$ cmake ..
 $ make
 $ ./prog
+```
+
+Optional CMake options:
+```bash
+-DDEBUG_INFO=ON/OFF         print the read parameter values
+-DENABLE_TIMING=ON/OFF      print timing information 
 ```

@@ -17,10 +17,15 @@ target_include_directories(prog PUBLIC include)
 target_compile_features(prog PUBLIC cxx_std_17)
 target_compile_options(prog PRIVATE -Wall -Wextra)
 
-# CMake option to enable debug output for used/read parameters
+# CMake options
 option(DEBUG_INFO "Print debugging information." OFF)
 if (DEBUG_INFO)
     target_compile_definitions(prog PUBLIC DEBUG_INFO)
+endif ()
+
+option(ENABLE_TIMING "Enable timing for the two important functions." OFF)
+if (ENABLE_TIMING)
+    target_compile_definitions(prog PUBLIC ENABLE_TIMING)
 endif ()
 
 # link against OpenMP

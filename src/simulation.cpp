@@ -3,6 +3,9 @@
 
 #include <fstream>
 #include <iostream>
+#ifdef ENABLE_TIMING
+#include <chrono>
+#endif
 
 #ifdef DEBUG_INFO
 #define READ_FROM_FILE(in, val) \
@@ -80,6 +83,11 @@ simulation::simulation(const std::string_view init_params, const std::string_vie
 #undef READ_FROM_FILE
 
 void simulation::initialize_arrays() {
+#ifdef ENABLE_TIMING
+  auto begin = std::chrono::system_clock::now();
+#endif
+  std::cout << "Initializing arrays ...\n";
+
   initializeArrays(statesOneInstanceParameter.data(),
                    algebraicsForTransferIndicesParameter.data(),
                    statesForTransferIndicesParameter.data(),
@@ -91,9 +99,21 @@ void simulation::initialize_arrays() {
                    setSpecificStatesCallFrequencyParameter.data(),
                    setSpecificStatesRepeatAfterFirstCallParameter.data(),
                    setSpecificStatesCallEnableBeginParameter.data());
+
+  std::cout << "Done.\n";
+#ifdef ENABLE_TIMING
+  auto end = std::chrono::system_clock::now();
+  auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(end - begin);
+  std::cout << "Elapsed time " << elapsed.count() << " ms\n";
+#endif
 }
 
 void simulation::compute_monodomain() {
+#ifdef ENABLE_TIMING
+  auto begin = std::chrono::system_clock::now();
+#endif
+  std::cout << "Computing monodomain ...\n";
+
   computeMonodomain(parameters.data(),
                     algebraicsForTransfer.data(),
                     statesForTransfer.data(),
@@ -107,4 +127,11 @@ void simulation::compute_monodomain() {
                     nTimeSteps1D,
                     prefactor,
                     valueForStimulatedPoint);
+
+  std::cout << "Done.\n";
+#ifdef ENABLE_TIMING
+  auto end = std::chrono::system_clock::now();
+  auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(end - begin);
+  std::cout << "Elapsed time " << elapsed.count() << " ms\n";
+#endif
 }

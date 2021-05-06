@@ -197,26 +197,8 @@ void initializeArrays(const double *statesOneInstanceParameter, const int *algeb
                       const double *setSpecificStatesCallFrequencyParameter, const double *setSpecificStatesRepeatAfterFirstCallParameter,
                       const double *setSpecificStatesCallEnableBeginParameter)
 {
-  std::cout << "initializeArrays begin" << std::endl;
-//  std::ofstream out{"init_data.out", std::ios::out | std::ios::trunc | std::ios::binary};
-//
-//  write_to_file(out, nStates, statesOneInstanceParameter);
-//  write_to_file(out, nAlgebraicsForTransferIndices, algebraicsForTransferIndicesParameter);
-//  write_to_file(out, nStatesForTransferIndices, statesForTransferIndicesParameter);
-//  write_to_file(out, nFiringEvents, firingEventsParameter);
-//  write_to_file(out, nFrequencyJitter,setSpecificStatesFrequencyJitterParameter);
-//  write_to_file(out, nFibersToCompute, motorUnitNoParameter);
-//  write_to_file(out, nFibersToCompute, fiberStimulationPointIndexParameter);
-//  write_to_file(out, nFibersToCompute, lastStimulationCheckTimeParameter);
-//  write_to_file(out, nFibersToCompute, setSpecificStatesCallFrequencyParameter);
-//  write_to_file(out, nFibersToCompute, setSpecificStatesRepeatAfterFirstCallParameter);
-//  write_to_file(out, nFibersToCompute, setSpecificStatesCallEnableBeginParameter);
-//
-//  out.close();
-
   for (int i = 0; i < nStates; i++)
     statesOneInstance[i] = statesOneInstanceParameter[i];
-
 
 
   for (int i = 0; i < nStatesForTransferIndices; i++)
@@ -282,8 +264,6 @@ void initializeArrays(const double *statesOneInstanceParameter, const int *algeb
       }
     }
   }
-
-  std::cout << "initializeArrays end" << std::endl;
 }
 
 
@@ -294,28 +274,6 @@ void computeMonodomain(const float *parameters,
                        double startTime, double timeStepWidthSplitting, int nTimeStepsSplitting, double dt0D, int nTimeSteps0D, double dt1D, int nTimeSteps1D,
                        double prefactor, double valueForStimulatedPoint)
 {
-
-  static bool first_run = true;
-
-  if (first_run) {
-    std::cout << "computeMonodomain begin" << std::endl;
-//    std::ofstream out{"compute_data_1", std::ios::out | std::ios::trunc | std::ios::binary};
-//
-//    // parameters
-//    write_to_file(out, nParametersTotal, parameters);
-//    write_to_file(out, nAlgebraicsForTransfer, algebraicsForTransfer);
-//    write_to_file(out, nStatesForTransfer, statesForTransfer);
-//    write_to_file(out, nElementLengths, elementLengths);
-//    write_to_file(out, startTime);
-//    write_to_file(out, timeStepWidthSplitting);
-//    write_to_file(out, dt0D);
-//    write_to_file(out, nTimeSteps0D);
-//    write_to_file(out, dt1D);
-//    write_to_file(out, nTimeSteps1D);
-//    write_to_file(out, prefactor);
-//    write_to_file(out, valueForStimulatedPoint);
-  }
-
   // map data to and from GPU
   #pragma omp target data map(to: parameters[:nParametersTotal], elementLengths[:nElementLengths]) \
        map(from: statesForTransfer[:nStatesForTransfer])
@@ -835,10 +793,4 @@ void computeMonodomain(const float *parameters,
 
   // map back from GPU to host
   //#pragma omp target update from(statesForTransfer[:nStatesForTransfer])
-
-  if (first_run) {
-    std::cout << "computeMonodomain end" << std::endl;
-    first_run = false;
-    std::exit(0);
-  }
 }

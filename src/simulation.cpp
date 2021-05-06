@@ -108,26 +108,30 @@ void simulation::initialize_arrays() {
 #endif
 }
 
-void simulation::compute_monodomain() {
+void simulation::compute_monodomain(const std::size_t repeats, const bool print) {
 #ifdef ENABLE_TIMING
   auto begin = std::chrono::system_clock::now();
 #endif
   std::cout << "Computing monodomain ...\n";
 
-  computeMonodomain(parameters.data(),
-                    algebraicsForTransfer.data(),
-                    statesForTransfer.data(),
-                    elementLengths.data(),
-                    startTime,
-                    timeStepWidthSplitting,
-                    nTimeStepsSplitting,
-                    dt0D,
-                    nTimeSteps0D,
-                    dt1D,
-                    nTimeSteps1D,
-                    prefactor,
-                    valueForStimulatedPoint);
-
+  for (std::size_t i = 1; i <= repeats; ++i) {
+    if (print) {
+      std::cout << "timestep " << i << '/' << repeats << '\n';
+    }
+    computeMonodomain(parameters.data(),
+                      algebraicsForTransfer.data(),
+                      statesForTransfer.data(),
+                      elementLengths.data(),
+                      startTime,
+                      timeStepWidthSplitting,
+                      nTimeStepsSplitting,
+                      dt0D,
+                      nTimeSteps0D,
+                      dt1D,
+                      nTimeSteps1D,
+                      prefactor,
+                      valueForStimulatedPoint);
+  }
   std::cout << "Done.\n";
 #ifdef ENABLE_TIMING
   auto end = std::chrono::system_clock::now();

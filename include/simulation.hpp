@@ -9,7 +9,7 @@ class simulation {
   simulation(std::string_view init_params, std::string_view compute_params);
 
   void initialize_arrays();
-  void compute_monodomain();
+  void compute_monodomain(std::size_t repeats = 1, bool print = false);
 
  private:
   // parameter for array initialization

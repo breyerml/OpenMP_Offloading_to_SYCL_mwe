@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.13)
 
 # set oneAPI compiler TODO: uncomment for DPCPP SYCL support
-set(CMAKE_CXX_COMPILER "dpcpp")
+#set(CMAKE_CXX_COMPILER "dpcpp")
 
 project(OpenMP_Offloading_to_SYCL)
 

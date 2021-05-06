@@ -1,4 +1,8 @@
 cmake_minimum_required(VERSION 3.13)
+
+# set oneAPI compiler TODO: uncomment for DPCPP SYCL support
+set(CMAKE_CXX_COMPILER "dpcpp")
+
 project(OpenMP_Offloading_to_SYCL)
 
 # set source files
@@ -15,6 +19,8 @@ target_include_directories(prog PUBLIC include)
 
 # set important compiler flags
 target_compile_features(prog PUBLIC cxx_std_17)
+# TODO: uncomment for DPCPP SYCL2020 support
+#target_compile_options(prog PUBLIC -sycl-std=2020)
 target_compile_options(prog PRIVATE -Wall -Wextra)
 
 # CMake options
@@ -33,5 +39,3 @@ find_package(OpenMP)
 if (OpenMP_CXX_FOUND)
     target_link_libraries(prog PUBLIC OpenMP::OpenMP_CXX)
 endif ()
-
-# TODO: add SYCL

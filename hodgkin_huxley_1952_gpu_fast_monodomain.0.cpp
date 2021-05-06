@@ -1,11 +1,10 @@
+#include "hodgkin_huxley.hpp" // TODO: remove for actual simulation
+
 typedef double real;
 #include <cmath>
 #include <omp.h>
 #include <iostream>
 #include <vector>
-#include <fstream>
-
-#include "hodgkin_huxley.hpp"
 
 #pragma omp declare target
 /*
@@ -87,7 +86,7 @@ real log(real x)
 
 }
 
-/* This file was created by opendihu at 2021/5/6 09:32:52.
+/* This file was created by opendihu at 2021/5/6 16:01:08.
  * It is designed for the FastMonodomainSolver and contains code for offloading to GPU.
   */
 
@@ -180,17 +179,10 @@ real vmValues[nInstancesToCompute]                            __attribute__ ((al
 #pragma omp end declare target
 
 
-template <typename T, typename U>
-void write_to_file(std::ofstream& out, const T num, const U* data) {
-  out.write(reinterpret_cast<const char*>(&num), sizeof(T));
-  out.write(reinterpret_cast<const char*>(data), num * sizeof(U));
-}
-template <typename T>
-void write_to_file(std::ostream& out, const T val) {
-  out.write(reinterpret_cast<const char*>(&val), sizeof(T));
-}
-
-
+// TODO: re-enable for actual simulation
+//#ifdef __cplusplus
+//extern "C"
+//#endif
 void initializeArrays(const double *statesOneInstanceParameter, const int *algebraicsForTransferIndicesParameter, const int *statesForTransferIndicesParameter,
                       const char *firingEventsParameter, const double *setSpecificStatesFrequencyJitterParameter, const int *motorUnitNoParameter,
                       const int *fiberStimulationPointIndexParameter, const double *lastStimulationCheckTimeParameter,
@@ -199,6 +191,7 @@ void initializeArrays(const double *statesOneInstanceParameter, const int *algeb
 {
   for (int i = 0; i < nStates; i++)
     statesOneInstance[i] = statesOneInstanceParameter[i];
+
 
 
   for (int i = 0; i < nStatesForTransferIndices; i++)
@@ -266,14 +259,18 @@ void initializeArrays(const double *statesOneInstanceParameter, const int *algeb
   }
 }
 
-
 // compute the total monodomain equation
-
+// TODO: re-enable for actual simulation
+//#ifdef __cplusplus
+//extern "C"
+//#endif
 void computeMonodomain(const float *parameters,
                        double *algebraicsForTransfer, double *statesForTransfer, const float *elementLengths,
                        double startTime, double timeStepWidthSplitting, int nTimeStepsSplitting, double dt0D, int nTimeSteps0D, double dt1D, int nTimeSteps1D,
                        double prefactor, double valueForStimulatedPoint)
 {
+
+
   // map data to and from GPU
   #pragma omp target data map(to: parameters[:nParametersTotal], elementLengths[:nElementLengths]) \
        map(from: statesForTransfer[:nStatesForTransfer])
@@ -793,4 +790,5 @@ void computeMonodomain(const float *parameters,
 
   // map back from GPU to host
   //#pragma omp target update from(statesForTransfer[:nStatesForTransfer])
+
 }

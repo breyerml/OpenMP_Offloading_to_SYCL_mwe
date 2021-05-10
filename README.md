@@ -16,6 +16,14 @@ Optional CMake options:
 -DENABLE_TIMING=ON/OFF      print timing information 
 ```
 
+## Preparing the environment
+
+On the pool computers of the institute, such as `pcsgs05`, Intel OneAPI is installed. Load the following modules:
+```bash
+module load m                        # loads gcc 10 with OpenMP support and OpenMPI
+module load pcsgs/oneapi/compiler    # makes `dpcpp` available
+```
+
 ## Running the full simulation
 
 1. Clone the [OpenDiHu github repo](https://github.com/maierbn/opendihu)

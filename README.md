@@ -20,8 +20,8 @@ Optional CMake options:
 
 1. Clone the [OpenDiHu github repo](https://github.com/maierbn/opendihu)
 2. Build the library (`cd opendihu && make`)
-3. Export the OpenDiHu root directory: `export OPENDIHU_HOME=/path/to/opendiuh`
-4. Create the directory `$OPENDIUH_HOME/examples/electrophysiology/input`
+3. Export the OpenDiHu root directory: `export OPENDIHU_HOME=/path/to/opendihu`
+4. Create the directory `$OPENDIHU_HOME/examples/electrophysiology/input`
 5. Copy the files
     * `hodgkin_huxley_1952.c`
     * `left_biceps_brachii_2x2fibers.bin`
@@ -29,7 +29,7 @@ Optional CMake options:
     * `MU_firing_times_always.txt`
 
    from the `simulation_files/` folder of this repo to the previously created folder
-6. Go to `$OPENDIUH_HOME/examples/electrophysiology/fibers/fibers_emg/build_release` and
+6. Go to `$OPENDIHU_HOME/examples/electrophysiology/fibers/fibers_emg/build_release` and
    run `./fast_fibers_emg ../settings_fibers_emg.py gpu.py`
 7. Copy your `hodgkin_huxley_1952_gpu_fast_monodomain.0.cpp` file
    to `$OPENDIUH_HOME/examples/electrophysiology/fibers/fibers_emg/build_release/src`

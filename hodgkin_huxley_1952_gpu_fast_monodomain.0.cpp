@@ -2,7 +2,7 @@
 
 typedef double real;
 #include <cmath>
-#include <omp.h>
+//#include <omp.h>
 #include <iostream>
 #include <vector>
 
@@ -358,10 +358,10 @@ void computeMonodomain(const float *parameters,
             // output to console
             if (stimulateCurrentPoint && fiberCenterIndex == instanceNo)
             {
-              if (omp_is_initial_device())
-                printf("t: %f, stimulate fiber %d (local no.), MU %d (computation on CPU)\n", currentTime, fiberNo, motorUnitNo[fiberNo]);
-              else
-                printf("t: %f, stimulate fiber %d (local no.), MU %d (computation on GPU)\n", currentTime, fiberNo, motorUnitNo[fiberNo]);
+//              if (omp_is_initial_device())
+//                printf("t: %f, stimulate fiber %d (local no.), MU %d (computation on CPU)\n", currentTime, fiberNo, motorUnitNo[fiberNo]);
+//              else
+//                printf("t: %f, stimulate fiber %d (local no.), MU %d (computation on GPU)\n", currentTime, fiberNo, motorUnitNo[fiberNo]);
             }
           }
           const bool storeAlgebraicsForTransfer = false;
@@ -675,10 +675,10 @@ void computeMonodomain(const float *parameters,
             // output to console
             if (stimulateCurrentPoint && fiberCenterIndex == instanceNo)
             {
-              if (omp_is_initial_device())
-                printf("t: %f, stimulate fiber %d (local no.), MU %d (computation on CPU)\n", currentTime, fiberNo, motorUnitNo[fiberNo]);
-              else
-                printf("t: %f, stimulate fiber %d (local no.), MU %d (computation on GPU)\n", currentTime, fiberNo, motorUnitNo[fiberNo]);
+//              if (omp_is_initial_device())
+//                printf("t: %f, stimulate fiber %d (local no.), MU %d (computation on CPU)\n", currentTime, fiberNo, motorUnitNo[fiberNo]);
+//              else
+//                printf("t: %f, stimulate fiber %d (local no.), MU %d (computation on GPU)\n", currentTime, fiberNo, motorUnitNo[fiberNo]);
             }
           }
           const bool storeAlgebraicsForTransfer = storeAlgebraicsForTransferSplitting && timeStepNo == nTimeSteps0D-1;

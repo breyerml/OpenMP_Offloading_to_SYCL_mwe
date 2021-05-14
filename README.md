@@ -18,11 +18,17 @@ Optional CMake options:
 
 ## Preparing the environment
 
-On the pool computers of the institute, such as `pcsgs05`, Intel OneAPI is installed. Load the following modules:
+On the pool computers of the institute, such as `pcsgs05`, Intel's (CUDA) SYCL enabled LLVM fork is installed. Load the
+following modules:
+
 ```bash
-module load m                        # loads gcc 10 with OpenMP support and OpenMPI
-module load pcsgs/oneapi/compiler    # makes `dpcpp` available
+module use /usr/local.nfs/sgs/modulefiles   # make modules visible
+module load m                               # loads gcc 10 with OpenMP support and OpenMPI
+module load pcsgs/sycl                      # makes clang++ available
 ```
+
+To compile the MWE example using cmake the environment variables `CXX` and `CC` must be set to `clang++` and `clang`
+respectively.
 
 ## Running the full simulation
 
@@ -45,5 +51,6 @@ module load pcsgs/oneapi/compiler    # makes `dpcpp` available
    the `$OPENDIHU_HOME/examples/electrophysiology/fibers/fibers_emg/settings_fibers_emg.py` file
 9. Go to the `$OPENDIHU_HOME/examples/electrophysiology/fibers/fibers_emg/build_release/src` directory and
    run `dpcpp hodgkin_huxley_1952_gpu_fast_monodomain.0.cpp -O3 -fPIC -shared -std=c++17 -sycl-std=2020 -o ../my_lib.so`
-   Make sure that the resulting `my_lib.so` is placed in the same directory as the simulation executable `fast_fibers_emg`.
+   Make sure that the resulting `my_lib.so` is placed in the same directory as the simulation
+   executable `fast_fibers_emg`.
 10. Rerun `./fast_fibers_emg ../settings_fibers_emg.py gpu.py` to use SYCL for the GPU support!

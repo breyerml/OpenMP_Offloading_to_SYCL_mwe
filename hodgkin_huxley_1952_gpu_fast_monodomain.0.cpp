@@ -179,10 +179,9 @@ real vmValues[nInstancesToCompute]                            __attribute__ ((al
 #pragma omp end declare target
 
 
-// TODO: re-enable for actual simulation
-//#ifdef __cplusplus
-//extern "C"
-//#endif
+#ifdef __cplusplus
+extern "C"
+#endif
 void initializeArrays(const double *statesOneInstanceParameter, const int *algebraicsForTransferIndicesParameter, const int *statesForTransferIndicesParameter,
                       const char *firingEventsParameter, const double *setSpecificStatesFrequencyJitterParameter, const int *motorUnitNoParameter,
                       const int *fiberStimulationPointIndexParameter, const double *lastStimulationCheckTimeParameter,
@@ -260,10 +259,9 @@ void initializeArrays(const double *statesOneInstanceParameter, const int *algeb
 }
 
 // compute the total monodomain equation
-// TODO: re-enable for actual simulation
-//#ifdef __cplusplus
-//extern "C"
-//#endif
+#ifdef __cplusplus
+extern "C"
+#endif
 void computeMonodomain(const float *parameters,
                        double *algebraicsForTransfer, double *statesForTransfer, const float *elementLengths,
                        double startTime, double timeStepWidthSplitting, int nTimeStepsSplitting, double dt0D, int nTimeSteps0D, double dt1D, int nTimeSteps1D,

@@ -50,7 +50,7 @@ respectively.
 8. Uncomment the option `libraryFilename` and change its value to `my_lib.so` in
    the `$OPENDIHU_HOME/examples/electrophysiology/fibers/fibers_emg/settings_fibers_emg.py` file
 9. Go to the `$OPENDIHU_HOME/examples/electrophysiology/fibers/fibers_emg/build_release/src` directory and
-   run `dpcpp hodgkin_huxley_1952_gpu_fast_monodomain.0.cpp -O3 -fPIC -shared -std=c++17 -sycl-std=2020 -o ../my_lib.so`
+   run `clang++ hodgkin_huxley_1952_gpu_fast_monodomain.0.cpp -O3 -fPIC -shared -std=c++17 -sycl-std=2020 -fsycl -fsycl-targets=nvptx64-nvidia-cuda-sycldevice -o ../my_lib.so`.
    Make sure that the resulting `my_lib.so` is placed in the same directory as the simulation
    executable `fast_fibers_emg`.
 10. Rerun `./fast_fibers_emg ../settings_fibers_emg.py gpu.py` to use SYCL for the GPU support!

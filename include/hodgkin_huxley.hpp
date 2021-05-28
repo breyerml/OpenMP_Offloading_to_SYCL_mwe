@@ -1,6 +1,9 @@
 #ifndef MWE_INCLUDE_HODGKIN_HUXLEY_HPP_
 #define MWE_INCLUDE_HODGKIN_HUXLEY_HPP_
 
+#ifdef __cplusplus
+extern "C"
+#endif
 void initializeArrays(const double* statesOneInstanceParameter,
                       [[maybe_unused]] const int* algebraicsForTransferIndicesParameter,
                       const int* statesForTransferIndicesParameter,
@@ -13,6 +16,9 @@ void initializeArrays(const double* statesOneInstanceParameter,
                       const double* setSpecificStatesRepeatAfterFirstCallParameter,
                       const double* setSpecificStatesCallEnableBeginParameter);
 
+#ifdef __cplusplus
+extern "C"
+#endif
 void computeMonodomain(const float* parameters,
                        double* algebraicsForTransfer,
                        double* statesForTransfer,

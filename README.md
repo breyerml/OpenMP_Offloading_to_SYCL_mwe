@@ -1,11 +1,22 @@
 # Porting a Simulation of the Activation of Muscle Fibers from OpenMP Offloading to SYCL
 
-Minimum working example for easier development. Requires GNU GCC 10 or newer (with CUDA offloading support).
+Minimum working example for easier development, requires DPC++ or hipSYCL and CMake (3.20).
 
+At first export the installation directories of DPC++ and/or hipSYCL:
 ```bash
-$ mkdir build && cd build
-$ cmake ..
-$ make
+$ export DPCPP_INSTALL_DIR=/path/to/dpcpp/install/dir
+$ export HIPSYCL_INSTALL_DIR=/path/to/hipsycl/install/dir
+```
+
+Additionally export an environmental variable `SYCL_TARGET` based on the used hardware:
+  - CPUs: `export SYCL_TARGET=omp`
+  - NVIDIA GPUs: `export SYCL_TARGET=cuda:sm_XX`
+
+Then use CMake to build the project using CMake Presets (for example using `dpcpp`, for hipSYCL simply replace it with `hipsycl`):
+```bash
+$ cmake --preset dpcpp
+$ cmake --build --preset dpcpp
+$ cd build_dpcpp
 $ ./prog
 ```
 

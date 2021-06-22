@@ -31,5 +31,5 @@
 ### JetBrains template
 .idea/
 cmake-build-*/
-build/
+build*/
 *.bin

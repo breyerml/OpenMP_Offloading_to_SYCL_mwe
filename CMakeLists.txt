@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.13)
+cmake_minimum_required(VERSION 3.20)
 
 project(OpenMP_Offloading_to_SYCL LANGUAGES CXX)
 

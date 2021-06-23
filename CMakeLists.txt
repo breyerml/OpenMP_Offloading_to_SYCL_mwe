@@ -80,6 +80,8 @@ endif ()
 # set SYCL implementation specific options
 if (SYCL_IMPLEMENTATION MATCHES "hipsycl")
 
+  add_sycl_to_target(TARGET ${EXECUTABLE_NAME} SOURCES hodgkin_huxley_1952_gpu_fast_monodomain.0.cpp)
+
 elseif (SYCL_IMPLEMENTATION MATCHES "dpcpp")
 
   target_compile_options(${EXECUTABLE_NAME} PRIVATE -sycl-std=2020)

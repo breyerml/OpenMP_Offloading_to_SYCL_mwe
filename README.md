@@ -65,3 +65,9 @@ respectively.
    Make sure that the resulting `my_lib.so` is placed in the same directory as the simulation
    executable `fast_fibers_emg`.
 10. Rerun `./fast_fibers_emg ../settings_fibers_emg.py gpu.py` to use SYCL for the GPU support!
+
+## Using other data sets
+
+To use other data sets than the default one (after copying the necessary fibers file to the correct directory) the following steps must be performed:
+1. Change the `fiber_file` in the `$OPENDIHU_HOME/examples/electrophysiology/fibers/fibers_emg/variables/gpu.py` file to the desired simulation file.
+2. In the `hodgkin_huxley_1952_gpu_fast_monodomain.0.cpp` file change the `n_fibers_to_copmute` variable to the correct value (e.g. when using the `left_biceps_brachii_37x37fibers.bin` file the variable must have the value `1369` (`= 37 * 37`)).

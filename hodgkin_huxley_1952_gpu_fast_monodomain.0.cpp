@@ -1,792 +1,980 @@
-#include "hodgkin_huxley.hpp" // TODO: remove for actual simulation
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+/*
+  Porting a Simulation of the Activation of Muscle Fibers from OpenMP Offloading to SYCL
 
-typedef double real;
-#include <cmath>
-//#include <omp.h>
+  Author:   Alexander Strack
+  Date:     30. September 2021
+  Description:
+  This Code was ported and optimised from a auto-generated OpenMP Offloading File.
+  It computes the activation of muscle fibers solving the Monodomain equation using
+  the Hodkin-Huxley model. The equation is split via Strang-Splitting in two 0D
+  and one 1D part. The 0D parts are computed via the Method of Heun, while the 1D
+  is using an implicit Euler Scheme which is solved by the Thomas Alogrithm
+*/
+/*
+  Running the full simulation in OpenDiHu with DPC++ installed on GPU
+
+  1. Clone the [OpenDiHu github repo](https://github.com/maierbn/opendihu)
+  2. Build the library (`cd opendihu && make`)
+  3. Export the OpenDiHu root directory: `export OPENDIHU_HOME=/path/to/opendihu`
+  4. Create the directory `$OPENDIHU_HOME/examples/electrophysiology/input`
+  5. Copy the files
+    * `hodgkin_huxley_1952.c`
+    * `left_biceps_brachii_2x2fibers.bin` or 37x37 or 109x109 respectively
+    * `MU_fibre_distribution_10MUs.txt`
+    * `MU_firing_times_always.txt`
+
+    from the `simulation_files/` folder of this repo to the previously created folder
+    6. Go to `$OPENDIHU_HOME/examples/electrophysiology/fibers/fibers_emg/build_release` and
+    run `./fast_fibers_emg ../settings_fibers_emg.py gpu.py`
+    7. Copy your `hodgkin_huxley_1952_gpu_fast_monodomain.0.cpp` file
+    to `$OPENDIHU_HOME/examples/electrophysiology/fibers/fibers_emg/build_release/src`
+    8. Uncomment the option `libraryFilename` and change its value to `my_lib.so` in
+    the `$OPENDIHU_HOME/examples/electrophysiology/fibers/fibers_emg/settings_fibers_emg.py` file
+    9. Go to the `$OPENDIHU_HOME/examples/electrophysiology/fibers/fibers_emg/build_release/src` directory and
+    run `clang++ hodgkin_huxley_1952_gpu_fast_monodomain.0.cpp -O3 -fPIC -shared -std=c++17 -sycl-std=2020 -fsycl -fsycl-targets=nvptx64-nvidia-cuda-sycldevice -o ../my_lib.so`.
+    Make sure that the resulting `my_lib.so` is placed in the same directory as the simulation
+    executable `fast_fibers_emg`.
+    10. Rerun `./fast_fibers_emg ../settings_fibers_emg.py gpu.py` to use SYCL for the GPU support!
+*/
+
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+//#include "hodgkin_huxley.hpp" // TODO: remove for simulation in OpenDiHu
+
+#include <CL/sycl.hpp>
 #include <iostream>
-#include <vector>
+#include <chrono>
+namespace sycl = cl::sycl;
+typedef double real;
+//typedef float real;
 
-#pragma omp declare target
-/*
-   There are a total of 9 entries in the algebraic variable array.
-   There are a total of 4 entries in each of the rate and state variable arrays.
-   There are a total of 9 entries in the constant variable array.
- */
-/*
- * VOI is time in component environment (millisecond).
- * STATES[0] is V in component membrane (millivolt).
- * CONSTANTS[0] is E_R in component membrane (millivolt).
- * CONSTANTS[1] is Cm in component membrane (microF_per_cm2).
- * ALGEBRAIC[0] is i_Na in component sodium_channel (microA_per_cm2).
- * ALGEBRAIC[4] is i_K in component potassium_channel (microA_per_cm2).
- * ALGEBRAIC[8] is i_L in component leakage_current (microA_per_cm2).
- * CONSTANTS[2] is i_Stim in component membrane (microA_per_cm2).
- * CONSTANTS[3] is g_Na in component sodium_channel (milliS_per_cm2).
- * CONSTANTS[6] is E_Na in component sodium_channel (millivolt).
- * STATES[1] is m in component sodium_channel_m_gate (dimensionless).
- * STATES[2] is h in component sodium_channel_h_gate (dimensionless).
- * ALGEBRAIC[1] is alpha_m in component sodium_channel_m_gate (per_millisecond).
- * ALGEBRAIC[5] is beta_m in component sodium_channel_m_gate (per_millisecond).
- * ALGEBRAIC[2] is alpha_h in component sodium_channel_h_gate (per_millisecond).
- * ALGEBRAIC[6] is beta_h in component sodium_channel_h_gate (per_millisecond).
- * CONSTANTS[4] is g_K in component potassium_channel (milliS_per_cm2).
- * CONSTANTS[7] is E_K in component potassium_channel (millivolt).
- * STATES[3] is n in component potassium_channel_n_gate (dimensionless).
- * ALGEBRAIC[3] is alpha_n in component potassium_channel_n_gate (per_millisecond).
- * ALGEBRAIC[7] is beta_n in component potassium_channel_n_gate (per_millisecond).
- * CONSTANTS[5] is g_L in component leakage_current (milliS_per_cm2).
- * CONSTANTS[8] is E_L in component leakage_current (millivolt).
- * RATES[0] is d/dt V in component membrane (millivolt).
- * RATES[1] is d/dt m in component sodium_channel_m_gate (dimensionless).
- * RATES[2] is d/dt h in component sodium_channel_h_gate (dimensionless).
- * RATES[3] is d/dt n in component potassium_channel_n_gate (dimensionless).
- */
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// PARAMETERS AND STORAGE
 
+// 0 -- use double sycl::exp                        potential: -75.1719661926
+// 1 -- use float sycl::exp                         potential: -75.1719662059
+// 2 -- use Benjamin Maiers approximation double    potential: -75.1700559855
+// 3 -- use Benjamin Maiers approximation float     potential: -75.1700517257
+constexpr char choose_exp = 0;
 
-real log(real x)
-{
-  // Taylor expansion of the log function around x=1
-  // Note: std::log does not work on GPU,
-  // however, if this code runs on CPU, it is fine
-#pragma omp \
-#ifndef GPU
-  return std::log(x);
-#pragma omp \
-#endif
+// after the last timestep, store the computed state values in the states_for_transfer vector for communication
+constexpr bool store_states_for_transfer = true;
 
-  // Taylor approximation around 1, 3 or 9
-  if (x < 2)
-  {
-    real t1 = x-1;
-    real t1_2 = t1*t1;
-    real t1_4 = t1_2*t1_2;
-    real t1_6 = t1_4*t1_2;
-    real result1 = t1 - 0.5*t1_2 + 1./3*t1_2*t1 - 0.25*t1_4 + 0.2*t1_4*t1 - 1./6*t1_6;
-    return result1;
-  }
-  else if (x < 6)
-  {
-    real t3 = x-3;
-    real t3_2 = t3*t3;
-    real t3_4 = t3_2*t3_2;
-    real result3 = 1.0986122886681098 + 1./3*t3 - 0.05555555555555555*t3_2 + 0.012345679012345678*t3_2*t3 - 0.0030864197530864196*t3_4;
-    return result3;
-  }
-  else
-  {
-    real t9 = x-9;
-    real t9_2 = t9*t9;
-    real t9_4 = t9_2*t9_2;
-    real result9 = 2.1972245773362196 + 1./9*t9 - 0.006172839506172839*t9_2 + 0.0004572473708276177*t9_2*t9 - 3.8103947568968146e-05*t9_4;
-    return result9;
-  }
+// Create queue to use the GPU device explicitly
+sycl::queue dev_Q{ sycl::gpu_selector{} };
+// Create queue to use the CPU device explicitly
+//sycl::queue dev_Q{ sycl::cpu_selector{} };
 
-  // The relative error of this implementation is below 0.04614465854334056 for x in [0.2,19].
-  return 0.0;
-
-}
-
-/* This file was created by opendihu at 2021/5/6 16:01:08.
- * It is designed for the FastMonodomainSolver and contains code for offloading to GPU.
-  */
-
-// helper functions
-real exponential(real x);
-real pow2(real x);
-real pow3(real x);
-real pow4(real x);
-
-real exponential(real x)
-{
-  //return Vc::exp(x);
-  // it was determined the x is always in the range [-12,+12]
-
-  // exp(x) = lim n→∞ (1 + x/n)^n, we set n=1024
-  x = 1.0 + x / 1024.;
-  for (int i = 0; i < 10; i++)
-  {
-    x *= x;
-  }
-  return x;
-
-  // relative error of this implementation:
-  // x    rel error
-  // 0    0
-  // 1    0.00048784455634225593
-  // 3    0.0043763626896140342
-  // 5    0.012093715791500804
-  // 9    0.038557535762274039
-  // 12   0.067389808619653505
-}
-
-real pow2(real x)
-{
-  return x*x;
-}
-real pow3(real x)
-{
-  return x*(pow2(x));
-}
-
-real pow4(real x)
-{
-  return pow2(pow2(x));
-}
-
-
-#pragma omp end declare target
+// CellML define constants
+constexpr real constant_0 = -75;
+constexpr real constant_1 = 1;
+//real constant_2 = 0; // unused
+constexpr real constant_3 = 120;
+constexpr real constant_4 = 36;
+constexpr real constant_5 = 0.3;
+constexpr real constant_6 = constant_0 + 115.0;
+constexpr real constant_7 = constant_0 - 12.0;
+constexpr real constant_8 = constant_0 + 10.613;
+constexpr real one_over_constant_1 = 1. / constant_1;
 
 // global size constants
-const int nInstancesPerFiber = 1481;
-const int nElementsOnFiber = 1480;
-const int nFibersToCompute = 4;
-const long long nInstancesToCompute = 5924;  // = nInstancesPerFiber*nFibersToCompute;
-const int nStates = 4;
-const int firingEventsNRows = 2;
-const int firingEventsNColumns = 100;
-const int frequencyJitterNColumns = 100;
-const int nStatesTotal = 23696;  // = nInstancesToCompute*nStates;
-const int nParametersTotal = 5924;  // = nInstancesToCompute*1;
-const int nElementLengths = 5920;  // = nElementsOnFiber*nFibersToCompute;
-const int nFiringEvents = 200;  // = firingEventsNRows*firingEventsNColumns;
-const int nFrequencyJitter = 400;  // = nFibersToCompute*frequencyJitterNColumns;
-const int nAlgebraicsForTransferIndices = 0;
-const int nAlgebraicsForTransfer = 0;  // = nInstancesToCompute*nAlgebraicsForTransferIndices;
-const int nStatesForTransferIndices = 1;
-const int nStatesForTransfer = 5924;  // = nInstancesToCompute*nStatesForTransferIndices;
+constexpr int n_instances_per_fiber = 1481;
+constexpr int n_elements_on_fiber = 1480;
+constexpr int n_fibers_to_compute = 1369;
+constexpr long long n_instances_to_compute = n_instances_per_fiber * n_fibers_to_compute;
+constexpr int n_states = 4;
+constexpr int firing_events_n_rows = 2;
+constexpr int firing_events_n_columns = 100;
+constexpr int frequency_jitter_n_columns = 100;
+constexpr int n_states_total = n_instances_to_compute * n_states;
+constexpr int n_parameters_total = n_instances_to_compute * 1;
+constexpr int n_element_lengths = n_elements_on_fiber * n_fibers_to_compute;
+constexpr int n_firing_events = firing_events_n_rows * firing_events_n_columns;
+constexpr int n_frequency_jitter = n_fibers_to_compute * frequency_jitter_n_columns;
+constexpr int n_states_for_transfer_indices = 1;
+constexpr int n_states_for_transfer = n_instances_to_compute * n_states_for_transfer_indices;
 
+constexpr int n_work_items_per_group = 128;
+constexpr int n_groups = n_instances_to_compute / n_work_items_per_group + 1;
 
-// the following code is generated by FastMonodomainSolver for offloading to GPU
-// global variables to be stored on the target device
-#pragma omp declare target
-real states[nStatesTotal]                                     __attribute__ ((aligned (64)));             // including state 0 which is stored in vmValues
-real statesOneInstance[nStates]                               __attribute__ ((aligned (64)));
-int statesForTransferIndices[nStatesForTransferIndices]       __attribute__ ((aligned (64)));
-char firingEvents[nFiringEvents]                              __attribute__ ((aligned (64)));
-real setSpecificStatesFrequencyJitter[nFrequencyJitter]       __attribute__ ((aligned (64)));
-char fiberIsCurrentlyStimulated[nFibersToCompute]             __attribute__ ((aligned (64)));
-int motorUnitNo[nFibersToCompute]                             __attribute__ ((aligned (64)));
-int fiberStimulationPointIndex[nFibersToCompute]              __attribute__ ((aligned (64)));
-real lastStimulationCheckTime[nFibersToCompute]               __attribute__ ((aligned (64)));
-real setSpecificStatesCallFrequency[nFibersToCompute]         __attribute__ ((aligned (64)));
-real setSpecificStatesRepeatAfterFirstCall[nFibersToCompute]  __attribute__ ((aligned (64)));
-real setSpecificStatesCallEnableBegin[nFibersToCompute]       __attribute__ ((aligned (64)));
-real currentJitter[nFibersToCompute]                          __attribute__ ((aligned (64)));
-int jitterIndex[nFibersToCompute]                             __attribute__ ((aligned (64)));
+//Define workload size
+sycl::range global{n_groups * n_work_items_per_group};
+sycl::range local{n_work_items_per_group};
 
-real vmValues[nInstancesToCompute]                            __attribute__ ((aligned (64)));
+// Declare device allocated memory
+real *states = sycl::malloc_device<real>(n_states_total, dev_Q);  // including state 0 which ware the vm values
+real *states_one_instance = sycl::malloc_device<real>(n_states, dev_Q);
+int *states_for_transfer_indices = sycl::malloc_device<int>(n_states_for_transfer_indices, dev_Q);
 
-#pragma omp end declare target
+char *firing_events = sycl::malloc_device<char>(n_firing_events, dev_Q);
+real *set_specific_states_frequency_jitter = sycl::malloc_device<real>(n_frequency_jitter, dev_Q);
+char *fiber_is_currently_stimulated = sycl::malloc_device<char>(n_fibers_to_compute, dev_Q);
+int  *motor_unit_no = sycl::malloc_device<int>(n_fibers_to_compute, dev_Q);
+int  *fiber_stimulation_point_index = sycl::malloc_device<int>(n_fibers_to_compute, dev_Q);
+real *last_stimulation_check_time = sycl::malloc_device<real>(n_fibers_to_compute, dev_Q);
+real *set_specific_states_call_frequency = sycl::malloc_device<real>(n_fibers_to_compute , dev_Q);
+real *set_specific_states_repeat_after_first_call = sycl::malloc_device<real>(n_fibers_to_compute, dev_Q);
+real *set_specific_states_call_enable_begin = sycl::malloc_device<real>(n_fibers_to_compute, dev_Q);
+real *current_jitter = sycl::malloc_device<real>(n_fibers_to_compute, dev_Q);
+int  *jitter_index = sycl::malloc_device<int>(n_fibers_to_compute, dev_Q);
 
+// Declare device allocated memory for constant values
+float *element_lengths_device = sycl::malloc_device<float>(n_element_lengths, dev_Q);
+float *parameters_device = sycl::malloc_device<float>(n_parameters_total, dev_Q);
 
-#ifdef __cplusplus
-extern "C"
-#endif
-void initializeArrays(const double *statesOneInstanceParameter, const int *algebraicsForTransferIndicesParameter, const int *statesForTransferIndicesParameter,
-                      const char *firingEventsParameter, const double *setSpecificStatesFrequencyJitterParameter, const int *motorUnitNoParameter,
-                      const int *fiberStimulationPointIndexParameter, const double *lastStimulationCheckTimeParameter,
-                      const double *setSpecificStatesCallFrequencyParameter, const double *setSpecificStatesRepeatAfterFirstCallParameter,
-                      const double *setSpecificStatesCallEnableBeginParameter)
+// Declare device allocated memory for Tridiagonal Matrix
+real *a = sycl::malloc_device<real>(n_instances_to_compute, dev_Q);
+real *b = sycl::malloc_device<real>(n_instances_to_compute, dev_Q);
+real *c = sycl::malloc_device<real>(n_instances_to_compute, dev_Q);
+real *d = sycl::malloc_device<real>(n_instances_to_compute, dev_Q);
+
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// CLASSES
+class Compute_0D
 {
-  for (int i = 0; i < nStates; i++)
-    statesOneInstance[i] = statesOneInstanceParameter[i];
+  // advance 0D in [time_splitting, time_splitting + dt_0D*n_time_steps_0D]
+  // ------------------------------------------------------------
+public:
+  Compute_0D(
+    real dt_0D_value,
+    int n_time_steps_0D_value,
+    real value_for_stimulated_point_value,
+    real time_splitting_value,
 
+    real *states_ref,
+    const float *parameters_ref,
+    char *firing_events_ref,
+    real *set_specific_states_frequency_jitter_ref,
+    char *fiber_is_currently_stimulated_ref,
+    int  *motor_unit_no_ref,
+    int  *fiber_stimulation_point_index_ref,
+    real *last_stimulation_check_time_ref,
+    real *set_specific_states_call_frequency_ref,
+    real *set_specific_states_repeat_after_first_call_ref,
+    real *set_specific_states_call_enable_begin_ref,
+    real *current_jitter_ref,
+    int  *jitter_index_ref):
 
+    dt_0D{dt_0D_value},
+    n_time_steps_0D{n_time_steps_0D_value},
+    value_for_stimulated_point{value_for_stimulated_point_value},
+    time_splitting{time_splitting_value},
 
-  for (int i = 0; i < nStatesForTransferIndices; i++)
-    statesForTransferIndices[i] = statesForTransferIndicesParameter[i];
+    states{states_ref},
+    parameters{parameters_ref},
+    firing_events{firing_events_ref},
+    set_specific_states_frequency_jitter{set_specific_states_frequency_jitter_ref},
+    fiber_is_currently_stimulated{fiber_is_currently_stimulated_ref},
+    motor_unit_no{motor_unit_no_ref},
+    fiber_stimulation_point_index{fiber_stimulation_point_index_ref},
+    last_stimulation_check_time{last_stimulation_check_time_ref},
+    set_specific_states_call_frequency{set_specific_states_call_frequency_ref},
+    set_specific_states_repeat_after_first_call{set_specific_states_repeat_after_first_call_ref},
+    set_specific_states_call_enable_begin{set_specific_states_call_enable_begin_ref},
+    current_jitter{current_jitter_ref},
+    jitter_index{jitter_index_ref}
+  {}
 
-  for (int i = 0; i < nFiringEvents; i++)
-    firingEvents[i] = firingEventsParameter[i];
-
-  for (int i = 0; i < nFrequencyJitter; i++)
-    setSpecificStatesFrequencyJitter[i] = setSpecificStatesFrequencyJitterParameter[i];
-
-  for (int fiberNo = 0; fiberNo < nFibersToCompute; fiberNo++)
+  void operator()(sycl::nd_item<1> it) const
   {
-    motorUnitNo[fiberNo] = motorUnitNoParameter[fiberNo];
-    fiberStimulationPointIndex[fiberNo] = fiberStimulationPointIndexParameter[fiberNo];
-    lastStimulationCheckTime[fiberNo] = lastStimulationCheckTimeParameter[fiberNo];
-    setSpecificStatesCallFrequency[fiberNo] = setSpecificStatesCallFrequencyParameter[fiberNo];
-    setSpecificStatesRepeatAfterFirstCall[fiberNo] = setSpecificStatesRepeatAfterFirstCallParameter[fiberNo];
-    setSpecificStatesCallEnableBegin[fiberNo] = setSpecificStatesCallEnableBeginParameter[fiberNo];
-  }
+    //compute current instance and check if its a valid instance
+    int instance_to_compute_no = it.get_global_id(0);
 
-  // set variables to zero
-  for (int fiberNo = 0; fiberNo < nFibersToCompute; fiberNo++)
-  {
-    fiberIsCurrentlyStimulated[fiberNo] = 0;
-    currentJitter[fiberNo] = 0;
-    jitterIndex[fiberNo] = 0;
-  }
-
-  // initialize vmValues
-  const double state0 = statesOneInstance[0];
-  for (int instanceToComputeNo = 0; instanceToComputeNo < nInstancesToCompute; instanceToComputeNo++)
-  {
-    vmValues[instanceToComputeNo] = state0;
-  }
-
-
-  // map values to target
-  #pragma omp target update to(states[:nStatesTotal], statesOneInstance[:nStates], \
-    statesForTransferIndices[:nStatesForTransferIndices], \
-    firingEvents[:nFiringEvents], setSpecificStatesFrequencyJitter[:nFrequencyJitter], \
-    motorUnitNo[:nFibersToCompute], fiberStimulationPointIndex[:nFibersToCompute], \
-    lastStimulationCheckTime[:nFibersToCompute], setSpecificStatesCallFrequency[:nFibersToCompute], \
-    setSpecificStatesRepeatAfterFirstCall[:nFibersToCompute], setSpecificStatesCallEnableBegin[:nFibersToCompute], \
-    currentJitter[:nFibersToCompute], jitterIndex[:nFibersToCompute], vmValues[:nInstancesToCompute])
-
-  // initialize states
-  #pragma omp target
-  {
-    // copy given values to variables on target
-    for (int fiberNo = 0; fiberNo < nFibersToCompute; fiberNo++)
+    if (instance_to_compute_no < n_instances_to_compute)
     {
-      for (int instanceNo = 0; instanceNo < nInstancesPerFiber; instanceNo++)
-      {
-        int instanceToComputeNo = fiberNo*nInstancesPerFiber + instanceNo;
+      // compute properties of instance
+      int instance_no = instance_to_compute_no % n_instances_per_fiber;
+      int fiber_no = instance_to_compute_no / n_instances_per_fiber;
 
-        // The entries in states[0] to states[1*nInstancesToCompute - 1] are not used.
-        // State zero is stored in vmValues instead.
-        for (int stateNo = 1; stateNo < nStates; stateNo++)
+      // write global data to private memory
+      real state_0 = states[instance_to_compute_no];
+      real state_1 = states[1 * n_instances_to_compute + instance_to_compute_no];
+      real state_2 = states[2 * n_instances_to_compute + instance_to_compute_no];
+      real state_3 = states[3 * n_instances_to_compute + instance_to_compute_no];
+
+      real parameter = parameters[instance_to_compute_no];
+
+      // local variables used for Heun
+      real algebraic_0;
+      real algebraic_1;
+      real algebraic_2;
+      real algebraic_3;
+      real algebraic_4;
+      real algebraic_5;
+      real algebraic_6;
+      real algebraic_7;
+      real algebraic_8;
+
+      real rate_0;
+      real rate_1;
+      real rate_2;
+      real rate_3;
+
+      real intermediate_algebraic_0;
+      real intermediate_algebraic_1;
+      real intermediate_algebraic_2;
+      real intermediate_algebraic_3;
+      real intermediate_algebraic_4;
+      real intermediate_algebraic_5;
+      real intermediate_algebraic_6;
+      real intermediate_algebraic_7;
+      real intermediate_algebraic_8;
+
+      real intermediate_rate_0;
+      real intermediate_rate_1;
+      real intermediate_rate_2;
+      real intermediate_rate_3;
+
+      real intermediate_state_0;
+      real intermediate_state_1;
+      real intermediate_state_2;
+      real intermediate_state_3;
+
+      // determine if current point is at center of fiber
+      int fiber_center_index = fiber_stimulation_point_index[fiber_no];
+      bool current_point_is_in_center = (unsigned long)(fiber_center_index + 1 - instance_no) < 3;
+
+      // loop over 0D timesteps
+      for (int time_step_no = 0; time_step_no < n_time_steps_0D; time_step_no++)
+      {
+        real current_time = time_splitting + time_step_no * dt_0D;
+
+        // determine if fiber gets stimulated
+        // check if current point will be stimulated
+        bool stimulate_current_point = false;
+
+        if (current_point_is_in_center)
         {
-          states[stateNo*nInstancesToCompute + instanceToComputeNo] = statesOneInstance[stateNo];
+          // check if time has come to call set_specific_states
+          bool check_stimulation = false;
+
+          if (current_time >= last_stimulation_check_time[fiber_no] + 1. / (set_specific_states_call_frequency[fiber_no] + current_jitter[fiber_no])
+              && current_time >= set_specific_states_call_enable_begin[fiber_no] - 1e-13)
+          {
+            check_stimulation = true;
+
+            // if current stimulation is over
+            if (set_specific_states_repeat_after_first_call[fiber_no] != 0
+                && current_time - (last_stimulation_check_time[fiber_no] + 1. / (set_specific_states_call_frequency[fiber_no] + current_jitter[fiber_no])) > set_specific_states_repeat_after_first_call[fiber_no])
+            {
+              // advance time of last call to specific_states
+              last_stimulation_check_time[fiber_no] += 1. / (set_specific_states_call_frequency[fiber_no] + current_jitter[fiber_no]);
+
+              // compute new jitter value
+              real jitter_factor = 0.0;
+              if (frequency_jitter_n_columns > 0)
+              {
+                jitter_factor = set_specific_states_frequency_jitter[fiber_no * frequency_jitter_n_columns + jitter_index[fiber_no] % frequency_jitter_n_columns];
+              }
+              current_jitter[fiber_no] = jitter_factor * set_specific_states_call_frequency[fiber_no];
+
+              jitter_index[fiber_no]++;
+
+              check_stimulation = false;
+            }
+          }
+
+          // instead of calling set_specific_states, directly determine whether to stimulate from the firing_events file
+          int firing_events_time_step_no = int(current_time * set_specific_states_call_frequency[fiber_no] + 0.5);
+          int firing_events_index = (firing_events_time_step_no % firing_events_n_rows) * firing_events_n_columns + (motor_unit_no[fiber_no] % firing_events_n_columns);
+
+          stimulate_current_point = check_stimulation && firing_events[firing_events_index];
+          fiber_is_currently_stimulated[fiber_no] = stimulate_current_point? 1 : 0;
         }
+
+        // START OF 0D COMPUTATION VIA METHOD OF HEUN
+        // compute new rates, rhs(y_n)
+        algebraic_1 = ( - 0.1 * (state_0 + 50.0)) / (exponential(- (state_0 + 50.0) * 0.1) - 1.0);
+        algebraic_5 = 4.0 * exponential(- (state_0 + 75.0) / 18.0);
+        rate_1 = algebraic_1 * (1.0 - state_1) - algebraic_5 * state_1;
+
+        algebraic_2 = 0.07 * exponential(- (state_0 + 75.0) * 0.05);
+        algebraic_6 = 1.0 / (exponential(- (state_0 + 45.0) * 0.1) + 1.0);
+        rate_2 = algebraic_2 * (1.0 - state_2) - algebraic_6 * state_2;
+
+        algebraic_3 = ( -0.01 * (state_0 + 65.0)) / (exponential(- (state_0 + 65.0) * 0.1) - 1.0);
+        algebraic_7 = 0.125 * exponential((state_0 + 75.0) * 0.0125);
+        rate_3 = algebraic_3 * (1.0 - state_3) - algebraic_7 * state_3;
+
+        algebraic_0 =  constant_3 * state_1 * state_1 * state_1 * state_2 * (state_0 - constant_6);
+        algebraic_4 =  constant_4 * state_3 * state_3 * state_3 * state_3 * (state_0 - constant_7);
+        algebraic_8 =  constant_5 * (state_0 - constant_8);
+        rate_0 = - (- parameter + algebraic_0 + algebraic_4 + algebraic_8) * one_over_constant_1;
+
+        // algebraic step
+        // compute y* = y_n + dt*rhs(y_n), y_n = state, rhs(y_n) = rate, y* = intermediateState
+        intermediate_state_0 = ((int) stimulate_current_point) * value_for_stimulated_point
+                             + (1 - (int) stimulate_current_point) * (state_0 + dt_0D * rate_0);
+        intermediate_state_1 = state_1 + dt_0D * rate_1;
+        intermediate_state_2 = state_2 + dt_0D * rate_2;
+        intermediate_state_3 = state_3 + dt_0D * rate_3;
+
+        // compute new rates, rhs(y*)
+        intermediate_algebraic_1 = ( - 0.1 * (intermediate_state_0 + 50.0))/(exponential(- (intermediate_state_0 + 50.0) * 0.1) - 1.0);
+        intermediate_algebraic_5 = 4.0 * exponential(- (intermediate_state_0 + 75.0) / 18.0);
+        intermediate_rate_1 = intermediate_algebraic_1 * (1.0 - intermediate_state_1) - intermediate_algebraic_5 * intermediate_state_1;
+
+        intermediate_algebraic_2 = 0.07 * exponential(- (intermediate_state_0 + 75.0) * 0.05);
+        intermediate_algebraic_6 = 1.0 / (exponential(- (intermediate_state_0 + 45.0) * 0.1) + 1.0);
+        intermediate_rate_2 = intermediate_algebraic_2 * (1.0 - intermediate_state_2) - intermediate_algebraic_6 * intermediate_state_2;
+
+        intermediate_algebraic_3 = ( - 0.01 * (intermediate_state_0 + 65.0)) / (exponential(- (intermediate_state_0 + 65.0) * 0.1) - 1.0);
+        intermediate_algebraic_7 = 0.125 * exponential((intermediate_state_0 + 75.0) * 0.0125);
+        intermediate_rate_3 = intermediate_algebraic_3 * (1.0 - intermediate_state_3) - intermediate_algebraic_7 * intermediate_state_3;
+
+        intermediate_algebraic_0 = constant_3 * intermediate_state_1 * intermediate_state_1 * intermediate_state_1 * intermediate_state_2 * (intermediate_state_0 - constant_6);
+        intermediate_algebraic_4 = constant_4 * intermediate_state_3 * intermediate_state_3 * intermediate_state_3 * intermediate_state_3 * (intermediate_state_0 - constant_7);
+        intermediate_algebraic_8 = constant_5 * (intermediate_state_0 - constant_8);
+        intermediate_rate_0 = - (- parameter + intermediate_algebraic_0 + intermediate_algebraic_4 + intermediate_algebraic_8) * one_over_constant_1;
+
+        // final step
+        // y_n+1 = y_n + 0.5*[rhs(y_n) + rhs(y*)]
+        state_0 = ((int) stimulate_current_point)* value_for_stimulated_point
+                + (1 - (int) stimulate_current_point) * (state_0 + 0.5 * dt_0D * (rate_0 + intermediate_rate_0));
+        state_1 += 0.5 * dt_0D * (rate_1 + intermediate_rate_1);
+        state_2 += 0.5 * dt_0D * (rate_2 + intermediate_rate_2);
+        state_3 += 0.5 * dt_0D * (rate_3 + intermediate_rate_3);
+      }  // loop over 0D timesteps
+
+      // write local data to global memory
+      states[instance_to_compute_no] = state_0;
+      states[1 * n_instances_to_compute + instance_to_compute_no] = state_1;
+      states[2 * n_instances_to_compute + instance_to_compute_no] = state_2;
+      states[3 * n_instances_to_compute + instance_to_compute_no] = state_3;
+    } //endif for valid instances
+  } // sycl parallel_for over fibers and instances per fiber
+
+private:
+  real dt_0D;
+  int n_time_steps_0D;
+  real value_for_stimulated_point;
+  real time_splitting;
+
+  real *states;
+  const float *parameters;
+  char *firing_events;
+  real *set_specific_states_frequency_jitter;
+  char *fiber_is_currently_stimulated;
+  int  *motor_unit_no;
+  int  *fiber_stimulation_point_index;
+  real *last_stimulation_check_time;
+  real *set_specific_states_call_frequency;
+  real *set_specific_states_repeat_after_first_call;
+  real *set_specific_states_call_enable_begin;
+  real *current_jitter;
+  int  *jitter_index;
+
+  // helper functions
+  real exponential(real x) const
+  {
+    if constexpr(choose_exp == 0)
+    {
+      return sycl::exp(x);
+    }
+    else if constexpr(choose_exp == 1)
+    {
+      return sycl::exp(static_cast<float>(x));
+    }
+    else if constexpr(choose_exp == 2)
+    {
+      // it was determined the x is always in the range [-12,+12]
+      // exp(x) = lim n→∞ (1 + x/n)^n, we set n=1024
+      x = 1.0 + x / 1024.;
+      //x = 1.0 + x * 0.0009765625;
+      for (int i = 0; i < 10; i++)
+      {
+        x *= x;
       }
+      return x;
+
+      // relative error of this implementation:
+      // x    rel error
+      // 0    0
+      // 1    0.00048784455634225593
+      // 3    0.0043763626896140342
+      // 5    0.012093715791500804
+      // 9    0.038557535762274039
+      // 12   0.067389808619653505
+    }
+    else
+    {
+      // exp(x) = lim n→∞ (1 + x/n)^n, we set n=1024
+      float y = 1.0f + static_cast<float>(x) / 1024.f;
+      //x = 1.0 + x * 0.0009765625;
+      for (int i = 0; i < 10; i++)
+      {
+        y *= y;
+      }
+      return y;
     }
   }
-}
+};
 
-// compute the total monodomain equation
-#ifdef __cplusplus
-extern "C"
-#endif
-void computeMonodomain(const float *parameters,
-                       double *algebraicsForTransfer, double *statesForTransfer, const float *elementLengths,
-                       double startTime, double timeStepWidthSplitting, int nTimeStepsSplitting, double dt0D, int nTimeSteps0D, double dt1D, int nTimeSteps1D,
-                       double prefactor, double valueForStimulatedPoint)
+class Compute_1D_matrix
 {
+  // advance 1D in [currentTimeSplitting, currentTimeSplitting + dt1D*nTimeSteps1D]
+  // ------------------------------------------------------------
 
+  // Implicit Euler step:
+  // (K - 1/dt*M) u^{n+1} = -1/dt*M u^{n})
 
-  // map data to and from GPU
-  #pragma omp target data map(to: parameters[:nParametersTotal], elementLengths[:nElementLengths]) \
-       map(from: statesForTransfer[:nStatesForTransfer])
+  // stencil K: 1/h*[_-1_  1  ]*prefactor
+  // stencil M:   h*[_1/3_ 1/6]
+public:
+  Compute_1D_matrix(
+    real dt_1D_value,
+    real prefactor_value,
+
+    real *states_ref,
+    const float *element_lengths_ref,
+
+    real *a_ref,
+    real *b_ref,
+    real *c_ref,
+    real *d_ref):
+
+    dt{dt_1D_value},
+    prefactor{prefactor_value},
+
+    states{states_ref},
+    element_lengths{element_lengths_ref},
+
+    a{a_ref},
+    b{b_ref},
+    c{c_ref},
+    d{d_ref}
+  {}
+
+  void operator()(sycl::nd_item<1> it) const
   {
+    // compute 'matrix' for thomas algorithm
+    // [ b c     ] [x]   [d]
+    // [ a b c   ] [x] = [d]
+    // [   a b c ] [x]   [d]
+    // [     a b ] [x]   [d]
 
-  // loop over splitting time steps
-  #pragma omp target teams
+    //compute current instance and check if its a valid instance
+    int instance_to_compute_no = it.get_global_id(0);
 
-
-  for (int timeStepNo = 0; timeStepNo < nTimeStepsSplitting; timeStepNo++)
-  {
-    // perform Strang splitting
-    real currentTimeSplitting = startTime + timeStepNo * timeStepWidthSplitting;
-
-    // compute midTimeSplitting once per step to reuse it. [currentTime, midTimeSplitting=currentTime+0.5*timeStepWidth, currentTime+timeStepWidth]
-    real midTimeSplitting = currentTimeSplitting + 0.5 * timeStepWidthSplitting;
-    bool storeAlgebraicsForTransferSplitting = false;   // do not store the computed algebraics values in the algebraicsForTransfer vector for communication, because this is the first 0D computation and they will be changed in the second 0D computation
-
-    // perform Strang splitting:
-    // 0D: [currentTimeSplitting, currentTimeSplitting + dt0D*nTimeSteps0D]
-    // 1D: [currentTimeSplitting, currentTimeSplitting + dt1D*nTimeSteps1D]
-    // 0D: [midTimeSplitting,     midTimeSplitting + dt0D*nTimeSteps0D]
-
-    // advance 0D in [currentTimeSplitting, currentTimeSplitting + dt0D*nTimeSteps0D]
-    // ------------------------------------------------------------
-
-    // loop over fibers that will be computed on this rank
-    #pragma omp distribute parallel for simd collapse(2)
-    for (int fiberNo = 0; fiberNo < nFibersToCompute; fiberNo++)
+    if (instance_to_compute_no < n_instances_to_compute)
     {
-      // loop over instances to compute here
-      for (int instanceNo = 0; instanceNo < nInstancesPerFiber; instanceNo++)
+      int value_no = instance_to_compute_no % n_instances_per_fiber;
+      int fiber_no = instance_to_compute_no / n_instances_per_fiber;
+
+      real a_local = 0;
+      real b_local = 0;
+      real c_local = 0;
+      real d_local = 0;
+
+      real u_previous = 0;
+      real u_center = 0;
+      real u_next = 0;
+
+      u_center = states[instance_to_compute_no];  // state_0 of the current instance
+
+      real one_over_dt = 1. / dt;
+
+      // contribution from left element
+      if (value_no > 0)
       {
-        int instanceToComputeNo = fiberNo*nInstancesPerFiber + instanceNo;    // index of instance over all fibers
+        u_previous = states[instance_to_compute_no - 1];  // state_0 of the left instance
 
-        // determine if current point is at center of fiber
-        int fiberCenterIndex = fiberStimulationPointIndex[fiberNo];
-        bool currentPointIsInCenter = (unsigned long)(fiberCenterIndex+1 - instanceNo) < 3;
+        // stencil K: 1/h*[1   _-1_ ]*prefactor
+        // stencil M:   h*[1/6 _1/3_]
 
-        // loop over 0D timesteps
-        for (int timeStepNo = 0; timeStepNo < nTimeSteps0D; timeStepNo++)
-        {
-          real currentTime = currentTimeSplitting + timeStepNo * dt0D;
+        real h_left = element_lengths[fiber_no * n_elements_on_fiber + value_no - 1];
+        real k_left = 1./h_left * (1) * prefactor;
+        real m_left = h_left * 1./6;
 
-          // determine if fiber gets stimulated
-          // check if current point will be stimulated
-          bool stimulateCurrentPoint = false;
-          if (currentPointIsInCenter)
-          {
-            // check if time has come to call setSpecificStates
-            bool checkStimulation = false;
+        a_local = (k_left - one_over_dt * m_left);   // formula for implicit Euler
 
-            if (currentTime >= lastStimulationCheckTime[fiberNo] + 1./(setSpecificStatesCallFrequency[fiberNo]+currentJitter[fiberNo])
-                && currentTime >= setSpecificStatesCallEnableBegin[fiberNo]-1e-13)
-            {
-              checkStimulation = true;
+        real k_right = 1./h_left * (-1) * prefactor;
+        real m_right = h_left * 1./3;
 
-              // if current stimulation is over
-              if (setSpecificStatesRepeatAfterFirstCall[fiberNo] != 0
-                  && currentTime - (lastStimulationCheckTime[fiberNo] + 1./(setSpecificStatesCallFrequency[fiberNo] + currentJitter[fiberNo])) > setSpecificStatesRepeatAfterFirstCall[fiberNo])
-              {
-                // advance time of last call to specificStates
-                lastStimulationCheckTime[fiberNo] += 1./(setSpecificStatesCallFrequency[fiberNo] + currentJitter[fiberNo]);
+        b_local += (k_right - one_over_dt * m_right);     // formula for implicit Euler
+        d_local += (-one_over_dt * m_left) * u_previous + (-one_over_dt * m_right) * u_center;
+      }
 
-                // compute new jitter value
-                real jitterFactor = 0.0;
-                if (frequencyJitterNColumns > 0)
-                  jitterFactor = setSpecificStatesFrequencyJitter[fiberNo*frequencyJitterNColumns + jitterIndex[fiberNo] % frequencyJitterNColumns];
-                currentJitter[fiberNo] = jitterFactor * setSpecificStatesCallFrequency[fiberNo];
+      // contribution from right element
+      if (value_no < n_values - 1)
+      {
+        u_next = states[instance_to_compute_no + 1];  // state 0 of the right instance
 
-                jitterIndex[fiberNo]++;
+        // stencil K: 1/h*[_-1_  1  ]*prefactor
+        // stencil M:   h*[_1/3_ 1/6]
 
-                checkStimulation = false;
-              }
-            }
+        real h_right = element_lengths[fiber_no * n_elements_on_fiber + value_no];
+        real k_right = 1./h_right * (1) * prefactor;
+        real m_right = h_right * 1./6;
 
-            // instead of calling setSpecificStates, directly determine whether to stimulate from the firingEvents file
-            int firingEventsTimeStepNo = int(currentTime * setSpecificStatesCallFrequency[fiberNo] + 0.5);
-            int firingEventsIndex = (firingEventsTimeStepNo % firingEventsNRows)*firingEventsNColumns + (motorUnitNo[fiberNo] % firingEventsNColumns);
-            // firingEvents_[timeStepNo*nMotorUnits + motorUnitNo[fiberNo]]
+        c_local = (k_right - one_over_dt * m_right);     // formula for implicit Euler
 
-            stimulateCurrentPoint = checkStimulation && firingEvents[firingEventsIndex];
-            fiberIsCurrentlyStimulated[fiberNo] = stimulateCurrentPoint? 1: 0;
+        real k_left = 1./h_right * (-1) * prefactor;
+        real m_left = h_right * 1./3;
 
-            // output to console
-            if (stimulateCurrentPoint && fiberCenterIndex == instanceNo)
-            {
-//              if (omp_is_initial_device())
-//                printf("t: %f, stimulate fiber %d (local no.), MU %d (computation on CPU)\n", currentTime, fiberNo, motorUnitNo[fiberNo]);
-//              else
-//                printf("t: %f, stimulate fiber %d (local no.), MU %d (computation on GPU)\n", currentTime, fiberNo, motorUnitNo[fiberNo]);
-            }
-          }
-          const bool storeAlgebraicsForTransfer = false;
+        b_local += (k_left - one_over_dt * m_left);
+        d_local += (-one_over_dt * m_left) * u_center + (-one_over_dt * m_right) * u_next;     // formula for implicit Euler
+      }
 
-          //if (stimulateCurrentPoint)
-          //  printf("stimulate fiberNo: %d, indexInFiber: %d (center: %d) \n", fiberNo, instanceNo, fiberCenterIndex);
+      // write local data to global memory
+      a[instance_to_compute_no] = a_local;
+      b[instance_to_compute_no] = b_local;
+      c[instance_to_compute_no] = c_local;
+      d[instance_to_compute_no] = d_local;
+    } // endif for valid instances
+  } // sycl parallel_for over fibers and instances per fiber
 
+private:
+  real dt;
+  real prefactor;
 
-          // CellML define constants
-          const real constant0 = -75;
-          const real constant1 = 1;
-          const real constant2 = 0;
-          const real constant3 = 120;
-          const real constant4 = 36;
-          const real constant5 = 0.3;
-          const real constant6 = constant0+115.000;
-          const real constant7 = constant0 - 12.0000;
-          const real constant8 = constant0+10.6130;
+  real *states;
+  const float *element_lengths;
 
-          // compute new rates, rhs(y_n)
-          const real algebraic1 = ( - 0.100000*(vmValues[instanceToComputeNo]+50.0000))/(exponential(- (vmValues[instanceToComputeNo]+50.0000)/10.0000) - 1.00000);
-          const real algebraic5 =  4.00000*exponential(- (vmValues[instanceToComputeNo]+75.0000)/18.0000);
-          const real rate1 =  algebraic1*(1.00000 - states[5924+instanceToComputeNo]) -  algebraic5*states[5924+instanceToComputeNo];
-          const real algebraic2 =  0.0700000*exponential(- (vmValues[instanceToComputeNo]+75.0000)/20.0000);
-          const real algebraic6 = 1.00000/(exponential(- (vmValues[instanceToComputeNo]+45.0000)/10.0000)+1.00000);
-          const real rate2 =  algebraic2*(1.00000 - states[11848+instanceToComputeNo]) -  algebraic6*states[11848+instanceToComputeNo];
-          const real algebraic3 = ( - 0.0100000*(vmValues[instanceToComputeNo]+65.0000))/(exponential(- (vmValues[instanceToComputeNo]+65.0000)/10.0000) - 1.00000);
-          const real algebraic7 =  0.125000*exponential((vmValues[instanceToComputeNo]+75.0000)/80.0000);
-          const real rate3 =  algebraic3*(1.00000 - states[17772+instanceToComputeNo]) -  algebraic7*states[17772+instanceToComputeNo];
-          const real algebraic0 =  constant3*pow3(states[5924+instanceToComputeNo])*states[11848+instanceToComputeNo]*(vmValues[instanceToComputeNo] - constant6);
-          const real algebraic4 =  constant4*pow4(states[17772+instanceToComputeNo])*(vmValues[instanceToComputeNo] - constant7);
-          const real algebraic8 =  constant5*(vmValues[instanceToComputeNo] - constant8);
-          const real rate0 = - (- parameters[0+instanceToComputeNo]+algebraic0+algebraic4+algebraic8)/constant1;
+  real *a;
+  real *b;
+  real *c;
+  real *d;
 
-          // algebraic step
-          // compute y* = y_n + dt*rhs(y_n), y_n = state, rhs(y_n) = rate, y* = intermediateState
-          states[0+instanceToComputeNo] = vmValues[instanceToComputeNo] + dt0D*rate0;
-          states[5924+instanceToComputeNo] = states[5924+instanceToComputeNo] + dt0D*rate1;
-          states[11848+instanceToComputeNo] = states[11848+instanceToComputeNo] + dt0D*rate2;
-          states[17772+instanceToComputeNo] = states[17772+instanceToComputeNo] + dt0D*rate3;
+  //renaming variable
+  const int n_values = n_instances_per_fiber;
+};
 
+class Compute_1D_thomas
+{
+  // advance 1D in [currentTimeSplitting, currentTimeSplitting + dt1D*nTimeSteps1D]
+  // ------------------------------------------------------------
 
-          // if stimulation, set value of Vm (state0)
-          if (stimulateCurrentPoint)
-          {
-            states[0+instanceToComputeNo] = valueForStimulatedPoint;
-          }
-          // compute new rates, rhs(y*)
-          const real intermediateAlgebraic1 = ( - 0.100000*(states[0+instanceToComputeNo]+50.0000))/(exponential(- (states[0+instanceToComputeNo]+50.0000)/10.0000) - 1.00000);
-          const real intermediateAlgebraic5 =  4.00000*exponential(- (states[0+instanceToComputeNo]+75.0000)/18.0000);
-          const real intermediateRate1 =  intermediateAlgebraic1*(1.00000 - states[5924+instanceToComputeNo]) -  intermediateAlgebraic5*states[5924+instanceToComputeNo];
-          const real intermediateAlgebraic2 =  0.0700000*exponential(- (states[0+instanceToComputeNo]+75.0000)/20.0000);
-          const real intermediateAlgebraic6 = 1.00000/(exponential(- (states[0+instanceToComputeNo]+45.0000)/10.0000)+1.00000);
-          const real intermediateRate2 =  intermediateAlgebraic2*(1.00000 - states[11848+instanceToComputeNo]) -  intermediateAlgebraic6*states[11848+instanceToComputeNo];
-          const real intermediateAlgebraic3 = ( - 0.0100000*(states[0+instanceToComputeNo]+65.0000))/(exponential(- (states[0+instanceToComputeNo]+65.0000)/10.0000) - 1.00000);
-          const real intermediateAlgebraic7 =  0.125000*exponential((states[0+instanceToComputeNo]+75.0000)/80.0000);
-          const real intermediateRate3 =  intermediateAlgebraic3*(1.00000 - states[17772+instanceToComputeNo]) -  intermediateAlgebraic7*states[17772+instanceToComputeNo];
-          const real intermediateAlgebraic0 =  constant3*pow3(states[5924+instanceToComputeNo])*states[11848+instanceToComputeNo]*(states[0+instanceToComputeNo] - constant6);
-          const real intermediateAlgebraic4 =  constant4*pow4(states[17772+instanceToComputeNo])*(states[0+instanceToComputeNo] - constant7);
-          const real intermediateAlgebraic8 =  constant5*(states[0+instanceToComputeNo] - constant8);
-          const real intermediateRate0 = - (- parameters[0+instanceToComputeNo]+intermediateAlgebraic0+intermediateAlgebraic4+intermediateAlgebraic8)/constant1;
+  // Implicit Euler step:
+  // (K - 1/dt*M) u^{n+1} = -1/dt*M u^{n})
+public:
+  Compute_1D_thomas(
+    real *states_ref,
 
-          // final step
-          // y_n+1 = y_n + 0.5*[rhs(y_n) + rhs(y*)]
-          vmValues[instanceToComputeNo] += 0.5*dt0D*(rate0 + intermediateRate0);
-          states[5924+instanceToComputeNo] += 0.5*dt0D*(rate1 + intermediateRate1);
-          states[11848+instanceToComputeNo] += 0.5*dt0D*(rate2 + intermediateRate2);
-          states[17772+instanceToComputeNo] += 0.5*dt0D*(rate3 + intermediateRate3);
+    real *a_ref,
+    real *b_ref,
+    real *c_ref,
+    real *d_ref):
 
-          if (stimulateCurrentPoint)
-          {
-            vmValues[instanceToComputeNo] = valueForStimulatedPoint;
-          }
+    states{states_ref},
+    a{a_ref},
+    b{b_ref},
+    c{c_ref},
+    d{d_ref}
+  {}
+  void operator()(sycl::nd_item<1> fibers) const
+  {
+    // [ b c     ] [x]   [d]
+    // [ a b c   ] [x] = [d]
+    // [   a b c ] [x]   [d]
+    // [     a b ] [x]   [d]
 
-          // store algebraics for transfer
-          if (storeAlgebraicsForTransfer)
-          {
+    // Thomas algorithm
+    // forward substitution
+    // c'_0 = c_0 / b_0
+    // c'_i = c_i / (b_i - c'_{i-1}*a_i)
 
-            for (int i = 0; i < nStatesForTransferIndices; i++)
-            {
-              const int stateIndex = statesForTransferIndices[i];
+    // d'_0 = d_0 / b_0
+    // d'_i = (d_i - d'_{i-1}*a_i) / (b_i - c'_{i-1}*a_i)
 
-              switch (stateIndex)
-              {
-                case 0:
-                  statesForTransfer[i*nInstancesToCompute + instanceToComputeNo] = vmValues[instanceToComputeNo];
-                  break;
-                case 1:
-                  statesForTransfer[i*nInstancesToCompute + instanceToComputeNo] = states[5924+instanceToComputeNo];
-                  break;
-                case 2:
-                  statesForTransfer[i*nInstancesToCompute + instanceToComputeNo] = states[11848+instanceToComputeNo];
-                  break;
-                case 3:
-                  statesForTransfer[i*nInstancesToCompute + instanceToComputeNo] = states[17772+instanceToComputeNo];
-                  break;
+    // backward substitution
+    // x_n = d'_n
+    // x_i = d'_i - c'_i * x_{i+1}
 
-              }
-            }
-          }
-        }  // loop over 0D timesteps
-      }  // loop over instances
-    }  // loop over fibers
+    //get current fiber and check if its a valid fiber
+    int fiber_no = fibers.get_global_id(0);;
 
-    // advance 1D in [currentTimeSplitting, currentTimeSplitting + dt1D*nTimeSteps1D]
-    // ------------------------------------------------------------
-
-    // Implicit Euler step:
-    // (K - 1/dt*M) u^{n+1} = -1/dt*M u^{n})
-    // Crank-Nicolson step:
-    // (1/2*K - 1/dt*M) u^{n+1} = (-1/2*K -1/dt*M) u^{n})
-
-    // stencil K: 1/h*[_-1_  1  ]*prefactor
-    // stencil M:   h*[_1/3_ 1/6]
-    const real dt = dt1D;
-
-    // loop over fibers
-    #pragma omp distribute parallel for
-    for (int fiberNo = 0; fiberNo < nFibersToCompute; fiberNo++)
+    if (fiber_no < n_fibers_to_compute)
     {
-
-      const int nValues = nInstancesPerFiber;
-
-      // [ b c     ] [x]   [d]
-      // [ a b c   ] [x] = [d]
-      // [   a b c ] [x]   [d]
-      // [     a b ] [x]   [d]
-
-      // Thomas algorithm
-      // forward substitution
-      // c'_0 = c_0 / b_0
-      // c'_i = c_i / (b_i - c'_{i-1}*a_i)
-
-      // d'_0 = d_0 / b_0
-      // d'_i = (d_i - d'_{i-1}*a_i) / (b_i - c'_{i-1}*a_i)
-
-      // backward substitution
-      // x_n = d'_n
-      // x_i = d'_i - c'_i * x_{i+1}
-
       // helper buffers c', d' for Thomas algorithm
-      real cIntermediate[nInstancesPerFiber-1];
-      real dIntermediate[nInstancesPerFiber];
+      real c_intermediate[n_instances_per_fiber - 1];
+      real d_intermediate[n_instances_per_fiber];
 
+      // Thomas Algorithm:
       // perform forward substitution
       // loop over entries / rows of matrices, this is equal to the instances of the current fiber
-      for (int valueNo = 0; valueNo < nValues; valueNo++)
+      for (int value_no = 0; value_no < n_values; value_no++)
       {
-        int instanceToComputeNo = fiberNo*nInstancesPerFiber + valueNo;
+        int instance_to_compute_no = fiber_no * n_instances_per_fiber + value_no;
 
-        real a = 0;
-        real b = 0;
-        real c = 0;
-        real d = 0;
+        real a_local = a[instance_to_compute_no];
+        real b_local = b[instance_to_compute_no];
+        real c_local = c[instance_to_compute_no];
+        real d_local = d[instance_to_compute_no];
 
-        real u_previous = 0;
-        real u_center = 0;
-        real u_next = 0;
-
-        u_center = vmValues[instanceToComputeNo];  // state 0 of the current instance
-
-        // contribution from left element
-        if (valueNo > 0)
-        {
-          u_previous = vmValues[instanceToComputeNo - 1];  // state 0 of the left instance
-
-          // stencil K: 1/h*[1   _-1_ ]*prefactor
-          // stencil M:   h*[1/6 _1/3_]
-
-          real h_left = elementLengths[fiberNo*nElementsOnFiber + valueNo-1];
-          real k_left = 1./h_left*(1) * prefactor;
-          real m_left = h_left*1./6;
-
-          a = (k_left - 1/dt*m_left);   // formula for implicit Euler
-
-          real k_right = 1./h_left*(-1) * prefactor;
-          real m_right = h_left*1./3;
-
-          b += (k_right - 1/dt*m_right);     // formula for implicit Euler
-          d += (-1/dt*m_left) * u_previous + (-1/dt*m_right) * u_center;
-
-        }
-
-        // contribution from right element
-        if (valueNo < nValues-1)
-        {
-          u_next = vmValues[instanceToComputeNo + 1];  // state 0 of the right instance
-
-          // stencil K: 1/h*[_-1_  1  ]*prefactor
-          // stencil M:   h*[_1/3_ 1/6]
-
-          real h_right = elementLengths[fiberNo*nElementsOnFiber + valueNo];
-          real k_right = 1./h_right*(1) * prefactor;
-          real m_right = h_right*1./6;
-
-          c = (k_right - 1/dt*m_right);     // formula for implicit Euler
-
-
-          real k_left = 1./h_right*(-1) * prefactor;
-          real m_left = h_right*1./3;
-
-          b += (k_left - 1/dt*m_left);
-          d += (-1/dt*m_left) * u_center + (-1/dt*m_right) * u_next;     // formula for implicit Euler
-
-        }
-
-        if (valueNo == 0)
+        if (value_no == 0)
         {
           // c'_0 = c_0 / b_0
-          cIntermediate[valueNo] = c / b;
+          c_intermediate[value_no] = c_local / b_local;
 
           // d'_0 = d_0 / b_0
-          dIntermediate[valueNo] = d / b;
+          d_intermediate[value_no] = d_local / b_local;
         }
         else
         {
-          if (valueNo != nValues-1)
+          if (value_no != n_values - 1)
           {
             // c'_i = c_i / (b_i - c'_{i-1}*a_i)
-            cIntermediate[valueNo] = c / (b - cIntermediate[valueNo-1]*a);
+            c_intermediate[value_no] = c_local / (b_local - c_intermediate[value_no - 1] * a_local);
           }
 
           // d'_i = (d_i - d'_{i-1}*a_i) / (b_i - c'_{i-1}*a_i)
-          dIntermediate[valueNo] = (d - dIntermediate[valueNo-1]*a) / (b - cIntermediate[valueNo-1]*a);
+          d_intermediate[value_no] = (d_local - d_intermediate[value_no - 1] * a_local) / (b_local - c_intermediate[value_no - 1] * a_local);
         }
       }
 
       // perform backward substitution
       // x_n = d'_n
-      vmValues[nValues-1] = dIntermediate[nValues-1];  // state 0 of the point (nValues-1)
+      states[fiber_no * n_instances_per_fiber + n_values - 1] = d_intermediate[n_values - 1];  // state_0 of the point (n_values - 1)
 
-      real previousValue = dIntermediate[nValues-1];
+      real previous_value = d_intermediate[n_values - 1];
 
       // loop over entries / rows of matrices
-      for (int valueNo = nValues-2; valueNo >= 0; valueNo--)
+      for (int value_no = n_values - 2; value_no >= 0; value_no--)
       {
-        int instanceToComputeNo = fiberNo*nInstancesPerFiber + valueNo;
+        int instance_to_compute_no = fiber_no * n_instances_per_fiber + value_no;
 
         // x_i = d'_i - c'_i * x_{i+1}
-        real resultValue = dIntermediate[valueNo] - cIntermediate[valueNo] * previousValue;
-        vmValues[instanceToComputeNo] = resultValue;
+        real result_value = d_intermediate[value_no] - c_intermediate[value_no] * previous_value;
+        states[instance_to_compute_no] = result_value;
 
-        previousValue = resultValue;
+        previous_value = result_value;
       }
-    }
+    } // endif for valid instances
+  } // sycl parallel_for over fibers
 
-    // advance 0D in [midTimeSplitting,     midTimeSplitting + dt0D*nTimeSteps0D]
-    // ------------------------------------------------------------
-    // in the last timestep, store the computed algebraics values in the algebraicsForTransfer vector for communication
-    storeAlgebraicsForTransferSplitting = timeStepNo == nTimeStepsSplitting-1;
+private:
+  real *states;
 
-    // loop over fibers that will be computed on this rank
+  real *a;
+  real *b;
+  real *c;
+  real *d;
 
-    #pragma omp distribute parallel for simd collapse(2)
-    for (int fiberNo = 0; fiberNo < nFibersToCompute; fiberNo++)
-    {
-      // loop over instances to compute here
-      for (int instanceNo = 0; instanceNo < nInstancesPerFiber; instanceNo++)
+  //renaming variable
+  const int n_values = n_instances_per_fiber;
+};
+
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// FUNCTIONS
+void which_device()
+{
+  // print used device
+  std::cout << "Selected device: " <<
+  dev_Q.get_device().get_info<sycl::info::device::name>() << "\n";
+}
+
+void free_memory()
+{
+  // SYCL free the allocated USM
+  free(states, dev_Q);
+  free(states_one_instance, dev_Q);
+  free(states_for_transfer_indices, dev_Q);
+
+  free(firing_events, dev_Q);
+  free(set_specific_states_frequency_jitter, dev_Q);
+  free(fiber_is_currently_stimulated, dev_Q);
+  free(motor_unit_no, dev_Q);
+  free(fiber_stimulation_point_index, dev_Q);
+  free(last_stimulation_check_time, dev_Q);
+  free(set_specific_states_call_frequency, dev_Q);
+  free(set_specific_states_repeat_after_first_call, dev_Q);
+  free(set_specific_states_call_enable_begin, dev_Q);
+  free(current_jitter, dev_Q);
+  free(jitter_index, dev_Q);
+
+  free(parameters_device, dev_Q);
+  free(element_lengths_device, dev_Q);
+
+  free(a, dev_Q);
+  free(b, dev_Q);
+  free(c, dev_Q);
+  free(d, dev_Q);
+}
+
+#ifdef __cplusplus
+extern "C"
+#endif
+void initializeArrays(const double *states_one_instance_parameter,
+                      const int* algebraics_for_transfer_indices_parameter_unused,  //unused -> remove for final version
+                      const int* states_for_transfer_indices_parameter,
+                      const char *firing_events_parameter,
+                      const double *set_specific_states_frequency_jitter_parameter,
+                      const int *motor_unit_no_parameter,
+                      const int *fiber_stimulation_point_index_parameter,
+                      const double *last_stimulation_check_time_parameter,
+                      const double *set_specific_states_call_frequency_parameter,
+                      const double *set_specific_states_repeat_after_first_call_parameter,
+                      const double *set_specific_states_call_enable_begin_parameter)
+{
+  // Identify the device e.g. which CPU or GPU - OPTIONAL
+  which_device();
+
+  // Initialize device memory
+  dev_Q.submit([&](sycl::handler &h)
+  {
+      // copy parameter data to device memory
+      h.memcpy(states_one_instance, &states_one_instance_parameter[0], n_states * sizeof(real));
+  });
+
+  dev_Q.submit([&](sycl::handler &h)
+  {
+      // copy parameter data to device memory
+      h.memcpy(states_for_transfer_indices, &states_for_transfer_indices_parameter[0], n_states_for_transfer_indices * sizeof(int));
+  });
+
+  dev_Q.submit([&](sycl::handler &h)
+  {
+      // copy parameter data to device memory
+      h.memcpy(firing_events, &firing_events_parameter[0], n_firing_events * sizeof(char));
+  });
+
+  dev_Q.submit([&](sycl::handler &h)
+  {
+      // copy parameter data to device memory
+      h.memcpy(set_specific_states_frequency_jitter, &set_specific_states_frequency_jitter_parameter[0], n_frequency_jitter * sizeof(real));
+  });
+
+  dev_Q.submit([&](sycl::handler &h)
+  {
+      // copy parameter data to device memory
+      h.memcpy(motor_unit_no, &motor_unit_no_parameter[0], n_fibers_to_compute * sizeof(int));
+  });
+
+  dev_Q.submit([&](sycl::handler &h)
+  {
+      // copy parameter data to device memory
+      h.memcpy(fiber_stimulation_point_index, &fiber_stimulation_point_index_parameter[0], n_fibers_to_compute * sizeof(int));
+  });
+
+  dev_Q.submit([&](sycl::handler &h)
+  {
+      // copy parameter data to device memory
+      h.memcpy(last_stimulation_check_time, &last_stimulation_check_time_parameter[0], n_fibers_to_compute * sizeof(real));
+  });
+
+  dev_Q.submit([&](sycl::handler &h)
+  {
+      // copy parameter data to device memory
+      h.memcpy(set_specific_states_call_frequency, &set_specific_states_call_frequency_parameter[0], n_fibers_to_compute * sizeof(real));
+  });
+
+  dev_Q.submit([&](sycl::handler &h)
+  {
+      // copy parameter data to device memory
+      h.memcpy(set_specific_states_repeat_after_first_call, &set_specific_states_repeat_after_first_call_parameter[0], n_fibers_to_compute * sizeof(real));
+  });
+
+  dev_Q.submit([&](sycl::handler &h)
+  {
+      // copy parameter data to device memory
+      h.memcpy(set_specific_states_call_enable_begin, &set_specific_states_call_enable_begin_parameter[0], n_fibers_to_compute * sizeof(real));
+  });
+
+  // set variables to zero
+  dev_Q.submit([&](sycl::handler &h)
+  {
+      // set device memory to 0
+      h.memset(fiber_is_currently_stimulated, 0, n_fibers_to_compute * sizeof(char));
+  });
+
+  dev_Q.submit([&](sycl::handler &h)
+  {
+      // set device memory to 0
+      h.memset(current_jitter, 0, n_fibers_to_compute * sizeof(int));
+  });
+
+  dev_Q.submit([&](sycl::handler &h)
+  {
+      // set device memory to 0
+      h.memset(jitter_index, 0, n_fibers_to_compute * sizeof(int));
+  });
+
+  // initialize states
+  dev_Q.submit([&](sycl::handler &h)
+  {
+      real *states_ref = states;
+      real *states_one_instance_ref = states_one_instance;
+
+      h.parallel_for<class Initialize>(sycl::nd_range{global, local}, [=](sycl::nd_item<1> it)
       {
-        int instanceToComputeNo = fiberNo*nInstancesPerFiber + instanceNo;    // index of instance over all fibers
+        //compute current instance and check if its a valid instance
+        int instance_to_compute_no = it.get_global_id(0);
 
-        // determine if current point is at center of fiber
-        int fiberCenterIndex = fiberStimulationPointIndex[fiberNo];
-        bool currentPointIsInCenter = (unsigned long)(fiberCenterIndex+1 - instanceNo) < 3;
-
-        // loop over 0D timesteps
-        for (int timeStepNo = 0; timeStepNo < nTimeSteps0D; timeStepNo++)
+        if (instance_to_compute_no < n_instances_to_compute)
         {
-          real currentTime = midTimeSplitting + timeStepNo * dt0D;
-
-          // determine if fiber gets stimulated
-          // check if current point will be stimulated
-          bool stimulateCurrentPoint = false;
-          if (currentPointIsInCenter)
+          for (int state_no = 0; state_no < n_states; state_no++)
           {
-            // check if time has come to call setSpecificStates
-            bool checkStimulation = false;
-
-            if (currentTime >= lastStimulationCheckTime[fiberNo] + 1./(setSpecificStatesCallFrequency[fiberNo]+currentJitter[fiberNo])
-                && currentTime >= setSpecificStatesCallEnableBegin[fiberNo]-1e-13)
-            {
-              checkStimulation = true;
-
-              // if current stimulation is over
-              if (setSpecificStatesRepeatAfterFirstCall[fiberNo] != 0
-                  && currentTime - (lastStimulationCheckTime[fiberNo] + 1./(setSpecificStatesCallFrequency[fiberNo] + currentJitter[fiberNo])) > setSpecificStatesRepeatAfterFirstCall[fiberNo])
-              {
-                // advance time of last call to specificStates
-                lastStimulationCheckTime[fiberNo] += 1./(setSpecificStatesCallFrequency[fiberNo] + currentJitter[fiberNo]);
-
-                // compute new jitter value
-                real jitterFactor = 0.0;
-                if (frequencyJitterNColumns > 0)
-                  jitterFactor = setSpecificStatesFrequencyJitter[fiberNo*frequencyJitterNColumns + jitterIndex[fiberNo] % frequencyJitterNColumns];
-                currentJitter[fiberNo] = jitterFactor * setSpecificStatesCallFrequency[fiberNo];
-
-                jitterIndex[fiberNo]++;
-
-                checkStimulation = false;
-              }
-            }
-
-            // instead of calling setSpecificStates, directly determine whether to stimulate from the firingEvents file
-            int firingEventsTimeStepNo = int(currentTime * setSpecificStatesCallFrequency[fiberNo] + 0.5);
-            int firingEventsIndex = (firingEventsTimeStepNo % firingEventsNRows)*firingEventsNColumns + (motorUnitNo[fiberNo] % firingEventsNColumns);
-            // firingEvents_[timeStepNo*nMotorUnits + motorUnitNo[fiberNo]]
-
-            stimulateCurrentPoint = checkStimulation && firingEvents[firingEventsIndex];
-            fiberIsCurrentlyStimulated[fiberNo] = stimulateCurrentPoint? 1: 0;
-
-            // output to console
-            if (stimulateCurrentPoint && fiberCenterIndex == instanceNo)
-            {
-//              if (omp_is_initial_device())
-//                printf("t: %f, stimulate fiber %d (local no.), MU %d (computation on CPU)\n", currentTime, fiberNo, motorUnitNo[fiberNo]);
-//              else
-//                printf("t: %f, stimulate fiber %d (local no.), MU %d (computation on GPU)\n", currentTime, fiberNo, motorUnitNo[fiberNo]);
-            }
+            states_ref[state_no * n_instances_to_compute + instance_to_compute_no] = states_one_instance_ref[state_no];
           }
-          const bool storeAlgebraicsForTransfer = storeAlgebraicsForTransferSplitting && timeStepNo == nTimeSteps0D-1;
+        }
+      });
+  });
 
-          //if (stimulateCurrentPoint)
-          //  printf("stimulate fiberNo: %d, indexInFiber: %d (center: %d) \n", fiberNo, instanceNo, fiberCenterIndex);
+  // wait initialize to complete
+  dev_Q.wait();
+}
 
+#ifdef __cplusplus
+extern "C"
+#endif
+void computeMonodomain(const float *parameters,
+                       double* algebraics_for_transfer_unused, //unused but required to match constructor
+                       double* states_for_transfer,
+                       const float *element_lengths,
+                       double start_time,
+                       double time_step_width_splitting,
+                       int n_time_steps_splitting,
+                       double dt_0D,
+                       int n_time_steps_0D,
+                       double dt_1D,
+                       int n_time_steps_1D_unused, //unused but required to match constructor
+                       double prefactor,
+                       double value_for_stimulated_point)
+{
+  // Start time - OPTIONAL
+  auto start = std::chrono::system_clock::now();
 
-          // CellML define constants
-          const real constant0 = -75;
-          const real constant1 = 1;
-          const real constant2 = 0;
-          const real constant3 = 120;
-          const real constant4 = 36;
-          const real constant5 = 0.3;
-          const real constant6 = constant0+115.000;
-          const real constant7 = constant0 - 12.0000;
-          const real constant8 = constant0+10.6130;
+  // Copy constant memory to device
+  auto copy_parameters = dev_Q.submit([&](sycl::handler &h)
+  {
+      // copy host data to device memory
+      h.memcpy(parameters_device, &parameters[0], n_parameters_total * sizeof(float));
+  });
 
-          // compute new rates, rhs(y_n)
-          const real algebraic1 = ( - 0.100000*(vmValues[instanceToComputeNo]+50.0000))/(exponential(- (vmValues[instanceToComputeNo]+50.0000)/10.0000) - 1.00000);
-          const real algebraic5 =  4.00000*exponential(- (vmValues[instanceToComputeNo]+75.0000)/18.0000);
-          const real rate1 =  algebraic1*(1.00000 - states[5924+instanceToComputeNo]) -  algebraic5*states[5924+instanceToComputeNo];
-          const real algebraic2 =  0.0700000*exponential(- (vmValues[instanceToComputeNo]+75.0000)/20.0000);
-          const real algebraic6 = 1.00000/(exponential(- (vmValues[instanceToComputeNo]+45.0000)/10.0000)+1.00000);
-          const real rate2 =  algebraic2*(1.00000 - states[11848+instanceToComputeNo]) -  algebraic6*states[11848+instanceToComputeNo];
-          const real algebraic3 = ( - 0.0100000*(vmValues[instanceToComputeNo]+65.0000))/(exponential(- (vmValues[instanceToComputeNo]+65.0000)/10.0000) - 1.00000);
-          const real algebraic7 =  0.125000*exponential((vmValues[instanceToComputeNo]+75.0000)/80.0000);
-          const real rate3 =  algebraic3*(1.00000 - states[17772+instanceToComputeNo]) -  algebraic7*states[17772+instanceToComputeNo];
-          const real algebraic0 =  constant3*pow3(states[5924+instanceToComputeNo])*states[11848+instanceToComputeNo]*(vmValues[instanceToComputeNo] - constant6);
-          const real algebraic4 =  constant4*pow4(states[17772+instanceToComputeNo])*(vmValues[instanceToComputeNo] - constant7);
-          const real algebraic8 =  constant5*(vmValues[instanceToComputeNo] - constant8);
-          const real rate0 = - (- parameters[0+instanceToComputeNo]+algebraic0+algebraic4+algebraic8)/constant1;
+  auto copy_element_length = dev_Q.submit([&](sycl::handler &h)
+  {
+      // copy host data to device memory
+      h.memcpy(element_lengths_device, &element_lengths[0], n_element_lengths * sizeof(float));
+  });
 
-          // algebraic step
-          // compute y* = y_n + dt*rhs(y_n), y_n = state, rhs(y_n) = rate, y* = intermediateState
-          states[0+instanceToComputeNo] = vmValues[instanceToComputeNo] + dt0D*rate0;
-          states[5924+instanceToComputeNo] = states[5924+instanceToComputeNo] + dt0D*rate1;
-          states[11848+instanceToComputeNo] = states[11848+instanceToComputeNo] + dt0D*rate2;
-          states[17772+instanceToComputeNo] = states[17772+instanceToComputeNo] + dt0D*rate3;
+  // Computation
+  // loop over splitting time steps
+  for (int time_step_no = 0; time_step_no < n_time_steps_splitting; time_step_no++)
+  {
+    // perform Strang splitting
+    real current_time_splitting = start_time + time_step_no * time_step_width_splitting;
+    //printf("Current Time: %f \n", current_time_splitting);
 
+    // compute midTimeSplitting once per step to reuse it. [currentTime, midTimeSplitting=currentTime+0.5*timeStepWidth, currentTime+timeStepWidth]
+    real mid_time_splitting = current_time_splitting + 0.5 * time_step_width_splitting;
 
-          // if stimulation, set value of Vm (state0)
-          if (stimulateCurrentPoint)
+    // perform Strang splitting:
+    //////////////////////////////////////////////////////////////////////
+    // 0D: [current_time_splitting, current_time_splitting + dt_0D*n_time_steps_0D]
+    {
+      auto cg_first_compute_0D = [&](sycl::handler& h)
+      {
+        //event dependancy
+        if (time_step_no == 0)
+        {
+          h.depends_on(copy_parameters);
+        }
+
+        h.parallel_for(sycl::nd_range{global, local}, Compute_0D(dt_0D, n_time_steps_0D, value_for_stimulated_point, current_time_splitting, states, parameters_device,
+          firing_events, set_specific_states_frequency_jitter, fiber_is_currently_stimulated, motor_unit_no, fiber_stimulation_point_index,
+          last_stimulation_check_time, set_specific_states_call_frequency, set_specific_states_repeat_after_first_call,
+          set_specific_states_call_enable_begin, current_jitter, jitter_index));
+      };
+      auto event_for_first_compute_0D = dev_Q.submit(cg_first_compute_0D);
+
+    //////////////////////////////////////////////////////////////////////
+    // 1D: [current_time_splitting, current_time_splitting + dt_1D*n_time_steps_1D]
+      //STEP 1: compute the entries of the Tridiagonal matrix
+      auto cg_compute_1D_matrix = [&](sycl::handler& h)
+      {
+        //event dependancy
+        if (time_step_no == 0)
+        {
+          h.depends_on(copy_element_length);
+        }
+        h.depends_on(event_for_first_compute_0D);
+
+        h.parallel_for(sycl::nd_range{global, local}, Compute_1D_matrix(dt_1D, prefactor, states, element_lengths_device, a, b, c, d));
+      };
+      auto event_for_compute_1D_matrix = dev_Q.submit(cg_compute_1D_matrix);
+
+      //STEP 2: solve Tridiagonal matrix with thomas Algorithm
+      auto cg_for_compute_1D_thomas = [&](sycl::handler& h)
+      {
+        //event dependancy
+        h.depends_on(event_for_compute_1D_matrix);
+
+        //Define workload size for thomas - runs over fiber not over intstances to compute
+        constexpr int n_groups_thomas = n_fibers_to_compute / n_work_items_per_group + 1;
+        sycl::range global_thomas{n_groups_thomas * n_work_items_per_group};
+
+        //exactly one action call -- access shared memory on device
+        h.parallel_for(sycl::nd_range{global_thomas, local}, Compute_1D_thomas(states, a, b, c, d));
+      };
+      auto event_for_compute_1D_thomas = dev_Q.submit(cg_for_compute_1D_thomas);
+
+    //////////////////////////////////////////////////////////////////////
+    // 0D: [mid_time_splitting,     mid_time_splitting + dt_0D*n_time_steps_0D]
+      auto cg_second_compute_0D = [&](sycl::handler& h)
+      {
+        //event dependancy
+        h.depends_on(event_for_compute_1D_thomas);
+
+        h.parallel_for(sycl::nd_range{global, local}, Compute_0D(dt_0D, n_time_steps_0D, value_for_stimulated_point, mid_time_splitting, states, parameters_device,
+          firing_events, set_specific_states_frequency_jitter, fiber_is_currently_stimulated, motor_unit_no, fiber_stimulation_point_index,
+          last_stimulation_check_time, set_specific_states_call_frequency, set_specific_states_repeat_after_first_call,
+          set_specific_states_call_enable_begin, current_jitter, jitter_index));
+      };
+      dev_Q.submit(cg_second_compute_0D);
+      dev_Q.wait();
+    }
+  }
+
+  // store states for transfer
+  //dev_Q.wait();
+  if (store_states_for_transfer)
+  {
+    sycl::buffer<double, 1> states_buffer(&states_for_transfer[0], n_states_for_transfer);
+
+    dev_Q.submit([&](sycl::handler &h)
+    {
+      //references to USM data
+      real *states_ref = states;
+      int *states_for_transfer_indices_ref = states_for_transfer_indices;
+
+      //accessor for buffers
+      auto states_buffer_accessor = states_buffer.get_access<sycl::access::mode::write>(h);
+
+      h.parallel_for<class Transfer>(sycl::nd_range{global, local}, [=](sycl::nd_item<1> it)
+      {
+        //compute current instance and check if its a valid instance
+        int instance_to_compute_no = it.get_global_id(0);
+
+        if (instance_to_compute_no < n_instances_to_compute)
+        {
+          for (int i = 0; i < n_states_for_transfer_indices; i++)
           {
-            states[0+instanceToComputeNo] = valueForStimulatedPoint;
+            const int state_index = states_for_transfer_indices_ref[i];
+            states_buffer_accessor[i * n_instances_to_compute + instance_to_compute_no] = states_ref[state_index * n_instances_to_compute + instance_to_compute_no];
           }
-          // compute new rates, rhs(y*)
-          const real intermediateAlgebraic1 = ( - 0.100000*(states[0+instanceToComputeNo]+50.0000))/(exponential(- (states[0+instanceToComputeNo]+50.0000)/10.0000) - 1.00000);
-          const real intermediateAlgebraic5 =  4.00000*exponential(- (states[0+instanceToComputeNo]+75.0000)/18.0000);
-          const real intermediateRate1 =  intermediateAlgebraic1*(1.00000 - states[5924+instanceToComputeNo]) -  intermediateAlgebraic5*states[5924+instanceToComputeNo];
-          const real intermediateAlgebraic2 =  0.0700000*exponential(- (states[0+instanceToComputeNo]+75.0000)/20.0000);
-          const real intermediateAlgebraic6 = 1.00000/(exponential(- (states[0+instanceToComputeNo]+45.0000)/10.0000)+1.00000);
-          const real intermediateRate2 =  intermediateAlgebraic2*(1.00000 - states[11848+instanceToComputeNo]) -  intermediateAlgebraic6*states[11848+instanceToComputeNo];
-          const real intermediateAlgebraic3 = ( - 0.0100000*(states[0+instanceToComputeNo]+65.0000))/(exponential(- (states[0+instanceToComputeNo]+65.0000)/10.0000) - 1.00000);
-          const real intermediateAlgebraic7 =  0.125000*exponential((states[0+instanceToComputeNo]+75.0000)/80.0000);
-          const real intermediateRate3 =  intermediateAlgebraic3*(1.00000 - states[17772+instanceToComputeNo]) -  intermediateAlgebraic7*states[17772+instanceToComputeNo];
-          const real intermediateAlgebraic0 =  constant3*pow3(states[5924+instanceToComputeNo])*states[11848+instanceToComputeNo]*(states[0+instanceToComputeNo] - constant6);
-          const real intermediateAlgebraic4 =  constant4*pow4(states[17772+instanceToComputeNo])*(states[0+instanceToComputeNo] - constant7);
-          const real intermediateAlgebraic8 =  constant5*(states[0+instanceToComputeNo] - constant8);
-          const real intermediateRate0 = - (- parameters[0+instanceToComputeNo]+intermediateAlgebraic0+intermediateAlgebraic4+intermediateAlgebraic8)/constant1;
+        }
+      });
+    });
+  }
 
-          // final step
-          // y_n+1 = y_n + 0.5*[rhs(y_n) + rhs(y*)]
-          vmValues[instanceToComputeNo] += 0.5*dt0D*(rate0 + intermediateRate0);
-          states[5924+instanceToComputeNo] += 0.5*dt0D*(rate1 + intermediateRate1);
-          states[11848+instanceToComputeNo] += 0.5*dt0D*(rate2 + intermediateRate2);
-          states[17772+instanceToComputeNo] += 0.5*dt0D*(rate3 + intermediateRate3);
+  // check if fibers went NaN - OPTIONAL
+  for (size_t i = 0; i < n_fibers_to_compute; i++)
+  {
+    if (std::isnan(states_for_transfer[i * n_instances_per_fiber + 781]))
+    {
+      std::cout << "Fiber " << i << " is NaN \n";
+    }
+  }
 
-          if (stimulateCurrentPoint)
-          {
-            vmValues[instanceToComputeNo] = valueForStimulatedPoint;
-          }
-
-          // store algebraics for transfer
-          if (storeAlgebraicsForTransfer)
-          {
-
-            for (int i = 0; i < nStatesForTransferIndices; i++)
-            {
-              const int stateIndex = statesForTransferIndices[i];
-
-              switch (stateIndex)
-              {
-                case 0:
-                  statesForTransfer[i*nInstancesToCompute + instanceToComputeNo] = vmValues[instanceToComputeNo];
-                  break;
-                case 1:
-                  statesForTransfer[i*nInstancesToCompute + instanceToComputeNo] = states[5924+instanceToComputeNo];
-                  break;
-                case 2:
-                  statesForTransfer[i*nInstancesToCompute + instanceToComputeNo] = states[11848+instanceToComputeNo];
-                  break;
-                case 3:
-                  statesForTransfer[i*nInstancesToCompute + instanceToComputeNo] = states[17772+instanceToComputeNo];
-                  break;
-
-              }
-            }
-          }
-
-
-        }  // loop over 0D timesteps
-      }  // loop over instances
-    }  // loop over fibers
-  } // loop over splitting timesteps
-
-  } // end pragma omp target
-
-  // map back from GPU to host
-  //#pragma omp target update from(statesForTransfer[:nStatesForTransfer])
-
+  // print run time - OPTIONAL
+  auto end = std::chrono::system_clock::now();
+  std::chrono::duration<double> elapsed = end - start;
+  std::cout.precision(2);
+  std::cout << dev_Q.get_device().get_info<sycl::info::device::name>() << " computation time: " << elapsed.count() << "s\n";
+  //Postprocessing
+  //free_memory(); // TODO: remove for simulation in OpenDiHu
 }

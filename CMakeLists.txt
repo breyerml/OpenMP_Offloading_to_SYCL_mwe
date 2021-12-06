@@ -68,7 +68,6 @@ if (OpenMP_CXX_FOUND)
 endif ()
 
 
-
 # set additional properties depending on the used SYCL implementation
 if("${SYCL_COMPILER}" STREQUAL "hipSYCL")
     add_sycl_to_target(TARGET ${EXECUTABLE_NAME} SOURCES hodgkin_huxley_1952_gpu_fast_monodomain.0.cpp)

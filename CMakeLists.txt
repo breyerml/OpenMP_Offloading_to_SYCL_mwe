@@ -1,47 +1,37 @@
-cmake_minimum_required(VERSION 3.20)
+cmake_minimum_required(VERSION 3.16.3)
 
 project(OpenMP_Offloading_to_SYCL LANGUAGES CXX)
 
 
-message(STATUS "Using \"${SYCL_IMPLEMENTATION}\" as SYCL implementation.")
+set(NVIDIA_GPU "" CACHE STRING "")
+set(AMD_GPU "" CACHE STRING "")
+if(NOT NVIDIA_GPU STREQUAL "")
+    set(HIPSYCL_TARGETS "cuda:${NVIDIA_GPU}")
+elseif (NOT AMD_GPU STREQUAL "")
+    set(HIPSYCL_TARGETS "hip:${AMD_GPU}")
+else()
+    set(HIPSYCL_TARGETS "omp")
+endif()
 
-
-# get target hardware
-# omp = CPU, cuda = NVIDIA GPUs, hip = AMD GPUs, spirv = Intel GPUs
-if (DEFINED SYCL_TARGET)
-  set(SYCL_TARGET_LIST ${SYCL_TARGET})
-elseif (DEFINED ENV{SYCL_TARGET})
-  set(SYCL_TARGET_LIST $ENV{SYCL_TARGET})
-else ()
-  message(FATAL_ERROR "Either the command line argument '-DSYCL_TARGET' must be present or the environment variable 'SYCL_TARGET' must be defined!")
-endif ()
-list(LENGTH SYCL_TARGET_LIST SYCL_TARGET_LIST_LEN)
-if (NOT ${SYCL_TARGET_LIST_LEN} MATCHES 1)
-  message(FATAL_ERROR "Currently only exactly one target architecture is supported!")
-endif ()
-string(FIND "${SYCL_TARGET_LIST}" ":" SYCL_ARCH_POS)
-string(SUBSTRING "${SYCL_TARGET_LIST}" 0 ${SYCL_ARCH_POS} SYCL_ARCH)
-set(SYCL_TARGETS omp cuda hip spirv)
-list(FIND SYCL_TARGETS "${SYCL_ARCH}" SYCL_TARGET_IDX)
-if (${SYCL_TARGET_IDX} MATCHES -1)
-  message(FATAL_ERROR "Unrecognized target \"${SYCL_ARCH}\"!")
-endif ()
-message(STATUS "Using \"${SYCL_ARCH}\" as SYCL target architecture.")
-
-
-# find different SYCL implementations
-if (SYCL_IMPLEMENTATION MATCHES "hipsycl")
-
-  set(HIPSYCL_TARGETS ${SYCL_TARGET_LIST})
-
-  find_package(hipSYCL CONFIG REQUIRED)
-  message(STATUS "Found hipSYCL.")
-
-elseif (SYCL_IMPLEMENTATION MATCHES "dpcpp")
-
-  message(STATUS "Found dpcpp.")
-
-endif ()
+# check if hipSYCL is used as SYCL compiler
+find_package(hipSYCL CONFIG)
+if(hipSYCL_FOUND)
+    set(SYCL_COMPILER "hipSYCL" CACHE STRING "" FORCE)
+    message(STATUS "found hipSYCL")
+else()
+    # if not, check if DPC++ is used instead
+    try_compile(SYCL_CHECK_FOR_DPCPP_COMPILER
+            "${CMAKE_BINARY_DIR}/temp"
+            "${PROJECT_SOURCE_DIR}/cmake/test_sycl_dpcpp.cpp"
+            CXX_STANDARD 17
+            CXX_STANDARD_REQUIRED ON)
+    if(SYCL_CHECK_FOR_DPCPP_COMPILER)
+        set(SYCL_COMPILER "DPC++" CACHE STRING "" FORCE)
+        message(STATUS "found DPC++")
+    else()
+        message(FATAL_ERROR "Cannot find a suitable SYCL compiler!")
+    endif()
+endif()
 
 
 # set source files
@@ -50,9 +40,11 @@ set(SOURCE
         ${CMAKE_CURRENT_SOURCE_DIR}/src/main.cpp
         hodgkin_huxley_1952_gpu_fast_monodomain.0.cpp)
 
+
 # create executable
 set(EXECUTABLE_NAME prog)
 add_executable(${EXECUTABLE_NAME} ${SOURCE})
+
 
 # set include directory
 target_include_directories(${EXECUTABLE_NAME} PRIVATE include)
@@ -77,27 +69,32 @@ endif ()
 
 
 
-# set SYCL implementation specific options
-if (SYCL_IMPLEMENTATION MATCHES "hipsycl")
+# set additional properties depending on the used SYCL implementation
+if("${SYCL_COMPILER}" STREQUAL "hipSYCL")
+    add_sycl_to_target(TARGET ${EXECUTABLE_NAME} SOURCES hodgkin_huxley_1952_gpu_fast_monodomain.0.cpp)
+    # silence unknown options warnings
+    target_compile_options(${EXECUTABLE_NAME} PRIVATE -Wno-unknown-warning-option)
+    message(STATUS "HIPSYCL_TARGETS: \"${HIPSYCL_TARGETS}\"")
+elseif("${SYCL_COMPILER}" STREQUAL "DPC++")
+    # enable DPC++ SYCL support
+    target_compile_options(${EXECUTABLE_NAME} PRIVATE -sycl-std=2020)
+    target_compile_options(${EXECUTABLE_NAME} PRIVATE -fsycl)
+    target_link_options(${EXECUTABLE_NAME} PRIVATE -fsycl)
 
-  add_sycl_to_target(TARGET ${EXECUTABLE_NAME} SOURCES hodgkin_huxley_1952_gpu_fast_monodomain.0.cpp)
 
-elseif (SYCL_IMPLEMENTATION MATCHES "dpcpp")
-
-  target_compile_options(${EXECUTABLE_NAME} PRIVATE -sycl-std=2020)
-  target_compile_options(${EXECUTABLE_NAME} PRIVATE -fsycl)
-  target_link_libraries(${EXECUTABLE_NAME} PRIVATE -fsycl)
-
-  if (SYCL_ARCH MATCHES "omp")
-    target_compile_options(${EXECUTABLE_NAME} PRIVATE -fsycl-targets=spir64_x86_64-unknown-unknown-sycldevice)
-    target_link_libraries(${EXECUTABLE_NAME} PRIVATE -fsycl-targets=spir64_x86_64-unknown-unknown-sycldevice)
-  elseif (SYCL_ARCH MATCHES "cuda")
-    target_compile_options(${EXECUTABLE_NAME} PRIVATE -fsycl-targets=nvptx64-nvidia-cuda-sycldevice)
-    target_link_libraries(${EXECUTABLE_NAME} PRIVATE -fsycl-targets=nvptx64-nvidia-cuda-sycldevice)
-  endif ()
-
-endif ()
-
+    # nvidia targets
+    if(NOT NVIDIA_GPU STREQUAL "")
+        target_compile_options(${EXECUTABLE_NAME} PRIVATE -fsycl-targets=nvptx64-nvidia-cuda)
+        target_link_options(${EXECUTABLE_NAME} PRIVATE -fsycl-targets=nvptx64-nvidia-cuda)
+    endif()
+    # amd targets
+    if(NOT AMD_GPU STREQUAL "")
+        target_compile_options(${EXECUTABLE_NAME} PRIVATE -fsycl-targets=amdgcn-amd-amdhsa)
+        target_link_options(${EXECUTABLE_NAME} PRIVATE -fsycl-targets=amdgcn-amd-amdhsa)
+        target_compile_options(${EXECUTABLE_NAME} PRIVATE -Xsycl-target-backend=amdgcn-amd-amdhsa --offload-arch=${AMD_GPU})
+        target_link_options(${EXECUTABLE_NAME} PRIVATE -Xsycl-target-backend=amdgcn-amd-amdhsa --offload-arch=${AMD_GPU})
+    endif()
+endif()
 
 
 
